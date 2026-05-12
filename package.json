@@ -1,0 +1,226 @@
+{
+  "name": "css-unused-detector",
+  "displayName": "CSS/SCSS Unused Detector",
+  "publisher": "alex-web-dev",
+  "description": "%extension.description%",
+  "version": "1.0.0",
+  "author": "alex-web.dev",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Linters"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/*.{css,scss,sass,less,styl}",
+    "onCommand:css-unused-detector.analyze"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "css-unused-detector.analyze",
+        "title": "%command.analyze.title%",
+        "category": "CSS Unused Detector"
+      },
+      {
+        "command": "css-unused-detector.openPanel",
+        "title": "%command.openPanel.title%",
+        "category": "CSS Unused Detector"
+      },
+      {
+        "command": "css-unused-detector.openSettings",
+        "title": "%command.openSettings.title%",
+        "category": "CSS Unused Detector"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "cssUnusedDetector",
+          "name": "CSS Unused Analysis",
+          "when": "cssUnusedDetector.hasAnalysis"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "css-unused-detector.analyze",
+        "key": "ctrl+shift+c",
+        "mac": "cmd+shift+c"
+      }
+    ],
+    "configuration": {
+      "title": "%config.title%",
+      "properties": {
+        "cssUnusedDetector.language": {
+          "type": "string",
+          "default": "es",
+          "enum": ["en", "es"],
+          "enumDescriptions": [
+            "%config.language.enum.en%",
+            "%config.language.enum.es%"
+          ],
+          "description": "%config.language.desc%"
+        },
+        "cssUnusedDetector.highlightColor": {
+          "type": "string",
+          "format": "color-hex",
+          "default": "#ff000026",
+          "description": "%config.highlightColor.desc%"
+        },
+        "cssUnusedDetector.highlightEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.highlightEnabled.desc%"
+        },
+        "cssUnusedDetector.codeLensEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.codeLensEnabled.desc%"
+        },
+        "cssUnusedDetector.diagnosticsEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.diagnosticsEnabled.desc%"
+        },
+        "cssUnusedDetector.diagnosticSeverity": {
+          "type": "string",
+          "default": "warning",
+          "enum": ["error", "warning", "information", "hint"],
+          "enumDescriptions": [
+            "%config.diagnosticSeverity.error%",
+            "%config.diagnosticSeverity.warning%",
+            "%config.diagnosticSeverity.info%",
+            "%config.diagnosticSeverity.hint%"
+          ],
+          "description": "%config.diagnosticSeverity.desc%"
+        },
+        "cssUnusedDetector.analyzeOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.analyzeOnSave.desc%"
+        },
+        "cssUnusedDetector.analyzeOnType": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.analyzeOnType.desc%"
+        },
+        "cssUnusedDetector.debounceDelay": {
+          "type": "number",
+          "default": 800,
+          "minimum": 200,
+          "maximum": 5000,
+          "description": "%config.debounceDelay.desc%"
+        },
+        "cssUnusedDetector.scanDomApi": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.scanDomApi.desc%"
+        },
+        "cssUnusedDetector.scanAngularPatterns": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.scanAngularPatterns.desc%"
+        },
+        "cssUnusedDetector.scanSveltePatterns": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.scanSveltePatterns.desc%"
+        },
+        "cssUnusedDetector.scanAstroPatterns": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.scanAstroPatterns.desc%"
+        },
+        "cssUnusedDetector.scanPugPatterns": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.scanPugPatterns.desc%"
+        },
+        "cssUnusedDetector.scanStyleBlocks": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.scanStyleBlocks.desc%"
+        },
+        "cssUnusedDetector.scanCssInJs": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.scanCssInJs.desc%"
+        },
+        "cssUnusedDetector.excludeFolders": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [
+            "node_modules", ".git", "dist", "build", ".next", ".nuxt",
+            ".angular", "vendor", "__pycache__", "coverage", ".cache",
+            ".parcel-cache", ".svelte-kit"
+          ],
+          "description": "%config.excludeFolders.desc%"
+        },
+        "cssUnusedDetector.excludeFiles": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "%config.excludeFiles.desc%"
+        },
+        "cssUnusedDetector.includeFileExtensions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [
+            "js", "jsx", "mjs", "cjs", "ts", "tsx", "mts",
+            "vue", "html", "htm", "xhtml",
+            "astro", "svelte",
+            "php", "phtml", "twig",
+            "hbs", "handlebars", "ejs",
+            "pug", "jade", "slim",
+            "erb", "haml",
+            "marko", "riot", "liquid",
+            "njk", "nunjucks", "mustache",
+            "jinja", "jinja2",
+            "mdx",
+            "cshtml", "razor",
+            "latte", "tpl", "ftl",
+            "jsp", "asp", "aspx"
+          ],
+          "description": "%config.includeFileExtensions.desc%"
+        },
+        "cssUnusedDetector.cssFileExtensions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["css", "scss", "sass", "less", "styl"],
+          "description": "%config.cssFileExtensions.desc%"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run esbuild-base -- --minify",
+    "esbuild-base": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "esbuild": "npm run esbuild-base -- --sourcemap",
+    "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
+    "pretest": "npm run esbuild && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js",
+    "compile": "tsc -p ./",
+    "package": "npx --yes @vscode/vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "@types/glob": "^8.1.0",
+    "@types/node": "16.x",
+    "@typescript-eslint/eslint-plugin": "^5.49.0",
+    "@typescript-eslint/parser": "^5.49.0",
+    "eslint": "^8.0.1",
+    "glob": "^8.1.0",
+    "typescript": "^4.9.4",
+    "@vscode/test-electron": "^2.2.2",
+    "esbuild": "^0.16.17"
+  },
+  "dependencies": {
+    "postcss": "^8.4.29",
+    "postcss-scss": "^4.0.9",
+    "postcss-selector-parser": "^6.0.13"
+  }
+}
