@@ -75,7 +75,7 @@ export class DiagnosticsManager {
           diagnosticsByFile.set(filePath, []);
         }
 
-        const range = new vscode.Range(
+        const range = selector.range ?? new vscode.Range(
           new vscode.Position(selector.line, 0),
           new vscode.Position(selector.line, selector.selector.length)
         );

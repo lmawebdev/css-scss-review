@@ -3,7 +3,7 @@
   "displayName": "CSS/SCSS Unused Detector",
   "publisher": "alex-web-dev",
   "description": "%extension.description%",
-  "version": "1.0.0",
+  "version": "1.0.14",
   "author": "alex-web.dev",
   "icon": "icon.png",
   "engines": {
@@ -22,7 +22,8 @@
       {
         "command": "css-unused-detector.analyze",
         "title": "%command.analyze.title%",
-        "category": "CSS Unused Detector"
+        "category": "CSS Unused Detector",
+        "icon": "$(search)"
       },
       {
         "command": "css-unused-detector.openPanel",
@@ -32,7 +33,20 @@
       {
         "command": "css-unused-detector.openSettings",
         "title": "%command.openSettings.title%",
-        "category": "CSS Unused Detector"
+        "category": "CSS Unused Detector",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "css-unused-detector.removeUnusedInFile",
+        "title": "%command.removeUnusedInFile.title%",
+        "category": "CSS Unused Detector",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "css-unused-detector.removeUnusedGlobally",
+        "title": "%command.removeUnusedGlobally.title%",
+        "category": "CSS Unused Detector",
+        "icon": "$(clear-all)"
       }
     ],
     "views": {
@@ -57,7 +71,10 @@
         "cssUnusedDetector.language": {
           "type": "string",
           "default": "es",
-          "enum": ["en", "es"],
+          "enum": [
+            "en",
+            "es"
+          ],
           "enumDescriptions": [
             "%config.language.enum.en%",
             "%config.language.enum.es%"
@@ -88,7 +105,12 @@
         "cssUnusedDetector.diagnosticSeverity": {
           "type": "string",
           "default": "warning",
-          "enum": ["error", "warning", "information", "hint"],
+          "enum": [
+            "error",
+            "warning",
+            "information",
+            "hint"
+          ],
           "enumDescriptions": [
             "%config.diagnosticSeverity.error%",
             "%config.diagnosticSeverity.warning%",
@@ -151,48 +173,136 @@
         },
         "cssUnusedDetector.excludeFolders": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [
-            "node_modules", ".git", "dist", "build", ".next", ".nuxt",
-            ".angular", "vendor", "__pycache__", "coverage", ".cache",
-            ".parcel-cache", ".svelte-kit"
+            "node_modules",
+            ".git",
+            "dist",
+            "build",
+            ".next",
+            ".nuxt",
+            ".angular",
+            "vendor",
+            "__pycache__",
+            "coverage",
+            ".cache",
+            ".parcel-cache",
+            ".svelte-kit"
           ],
           "description": "%config.excludeFolders.desc%"
         },
         "cssUnusedDetector.excludeFiles": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "%config.excludeFiles.desc%"
         },
         "cssUnusedDetector.includeFileExtensions": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [
-            "js", "jsx", "mjs", "cjs", "ts", "tsx", "mts",
-            "vue", "html", "htm", "xhtml",
-            "astro", "svelte",
-            "php", "phtml", "twig",
-            "hbs", "handlebars", "ejs",
-            "pug", "jade", "slim",
-            "erb", "haml",
-            "marko", "riot", "liquid",
-            "njk", "nunjucks", "mustache",
-            "jinja", "jinja2",
+            "js",
+            "jsx",
+            "mjs",
+            "cjs",
+            "ts",
+            "tsx",
+            "mts",
+            "vue",
+            "html",
+            "htm",
+            "xhtml",
+            "astro",
+            "svelte",
+            "php",
+            "phtml",
+            "twig",
+            "hbs",
+            "handlebars",
+            "ejs",
+            "pug",
+            "jade",
+            "slim",
+            "erb",
+            "haml",
+            "marko",
+            "riot",
+            "liquid",
+            "njk",
+            "nunjucks",
+            "mustache",
+            "jinja",
+            "jinja2",
             "mdx",
-            "cshtml", "razor",
-            "latte", "tpl", "ftl",
-            "jsp", "asp", "aspx"
+            "cshtml",
+            "razor",
+            "latte",
+            "tpl",
+            "ftl",
+            "jsp",
+            "asp",
+            "aspx"
           ],
           "description": "%config.includeFileExtensions.desc%"
         },
         "cssUnusedDetector.cssFileExtensions": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["css", "scss", "sass", "less", "styl"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "css",
+            "scss",
+            "sass",
+            "less",
+            "styl"
+          ],
           "description": "%config.cssFileExtensions.desc%"
         }
       }
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "css-unused-detector.analyze",
+          "when": "view == cssUnusedDetector",
+          "group": "navigation@1"
+        },
+        {
+          "command": "css-unused-detector.removeUnusedGlobally",
+          "when": "view == cssUnusedDetector",
+          "group": "navigation@2"
+        },
+        {
+          "command": "css-unused-detector.openSettings",
+          "when": "view == cssUnusedDetector",
+          "group": "navigation@3"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "css-unused-detector.removeUnusedInFile",
+          "when": "resourceLangId =~ /css|scss|sass|less|vue|svelte|astro|html/",
+          "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "css-unused-detector.removeUnusedInFile",
+          "when": "resourceLangId =~ /css|scss|sass|less|vue|svelte|astro|html/",
+          "group": "css-unused@1"
+        },
+        {
+          "command": "css-unused-detector.removeUnusedGlobally",
+          "group": "css-unused@2"
+        }
+      ]
     }
   },
   "scripts": {
@@ -202,8 +312,9 @@
     "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
     "pretest": "npm run esbuild && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js",
+    "test": "node ./dist/test/runTest.js",
     "compile": "tsc -p ./",
+    "prepackage": "npm version patch --no-git-tag-version",
     "package": "npx --yes @vscode/vsce package --no-dependencies"
   },
   "devDependencies": {

@@ -8,6 +8,7 @@ import { StatusBarManager } from './statusbar';
 import { CSSHoverProvider } from './hover';
 import { CSSUnusedTreeProvider } from './treeview';
 import { CSSIgnoreCodeActionProvider } from './codeactions';
+import { removeUnusedInFile, removeUnusedGlobally } from './cleanup';
 
 let analyzer: CSSAnalyzer;
 let diagnosticsManager: DiagnosticsManager;
@@ -16,8 +17,10 @@ let hoverProvider: CSSHoverProvider;
 let statusBarManager: StatusBarManager;
 let treeProvider: CSSUnusedTreeProvider;
 
-let analysisTimer: NodeJS.Timeout | undefined;
+let analysisTimer: ReturnType<typeof setTimeout> | undefined;
 let isAnalyzing = false;
+let cancellationSource: vscode.CancellationTokenSource | undefined;
+let lastResults: import('./analyzer').AnalysisResult | undefined;
 
 export async function activate(context: vscode.ExtensionContext) {
   // Initialize language from settings
@@ -133,17 +136,70 @@ export async function activate(context: vscode.ExtensionContext) {
     )
   );
 
+  // Remove unused selectors in current file
+  context.subscriptions.push(
+    vscode.commands.registerCommand('css-unused-detector.removeUnusedInFile', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || !lastResults) {
+        vscode.window.showWarningMessage(t('cleanupNoResults'));
+        return;
+      }
+      const count = await removeUnusedInFile(editor.document, lastResults);
+      if (count > 0) {
+        vscode.window.showInformationMessage(t('cleanupFileSuccess', { count }));
+        scheduleAnalysis(200);
+      } else {
+        vscode.window.showInformationMessage(t('cleanupFileNone'));
+      }
+    })
+  );
+
+  // Remove unused selectors globally (with warning)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('css-unused-detector.removeUnusedGlobally', async () => {
+      if (!lastResults) {
+        vscode.window.showWarningMessage(t('cleanupNoResults'));
+        return;
+      }
+      if (lastResults.unused.length === 0) {
+        vscode.window.showInformationMessage(t('cleanupFileNone'));
+        return;
+      }
+
+      const confirm = await vscode.window.showWarningMessage(
+        t('cleanupGlobalWarning', { count: lastResults.unused.length }),
+        { modal: true },
+        t('cleanupGlobalConfirm')
+      );
+
+      if (!confirm) {
+        return;
+      }
+
+      const { filesChanged, rulesRemoved } = await removeUnusedGlobally(lastResults);
+      vscode.window.showInformationMessage(
+        t('cleanupGlobalSuccess', { rules: rulesRemoved, files: filesChanged })
+      );
+      scheduleAnalysis(200);
+    })
+  );
+
   // Run initial analysis
   await runAnalysis(false);
 
   // === Auto-refresh triggers ===
 
-  // 1. On document text change (while typing) — debounced
+  // 1. On document text change (while typing) — debounced re-analysis
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument(e => {
-      const cfg = getConfig();
-      if (cfg.analyzeOnType && e.document.uri.scheme === 'file') {
-        scheduleAnalysis(cfg.debounceDelay);
+      if (e.document.uri.scheme === 'file' && e.contentChanges.length > 0) {
+        // Invalidate CodeLens immediately so stale positions are cleared
+        codeLensProvider.invalidate();
+
+        const cfg = getConfig();
+        if (cfg.analyzeOnType) {
+          scheduleAnalysis(cfg.debounceDelay);
+        }
       }
     })
   );
@@ -158,8 +214,10 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // 3. On file create/delete — re-scan
-  const fileWatcher = vscode.workspace.createFileSystemWatcher('**/*');
+  // 3. On file create/delete — re-scan (only relevant file types)
+  const watchCfg = getConfig();
+  const watchExts = [...new Set([...watchCfg.cssFileExtensions, ...watchCfg.includeFileExtensions])];
+  const fileWatcher = vscode.workspace.createFileSystemWatcher(`**/*.{${watchExts.join(',')}}`);
   fileWatcher.onDidCreate(() => scheduleAnalysis(500));
   fileWatcher.onDidDelete(() => scheduleAnalysis(500));
   context.subscriptions.push(fileWatcher);
@@ -185,20 +243,33 @@ function scheduleAnalysis(delayMs: number) {
 }
 
 async function runAnalysis(showMessage: boolean) {
-  if (!vscode.workspace.workspaceFolders || isAnalyzing) {
+  if (!vscode.workspace.workspaceFolders) {
     return;
   }
+
+  // Cancel any in-progress analysis
+  if (cancellationSource) {
+    cancellationSource.cancel();
+    cancellationSource.dispose();
+  }
+  cancellationSource = new vscode.CancellationTokenSource();
+  const token = cancellationSource.token;
 
   isAnalyzing = true;
   try {
     const workspaceFolder = vscode.workspace.workspaceFolders[0];
-    const results = await analyzer.analyzeWorkspace(workspaceFolder);
+    const results = await analyzer.analyzeWorkspace(workspaceFolder, token);
+
+    if (token.isCancellationRequested) {
+      return;
+    }
 
     diagnosticsManager.updateDiagnostics(results);
     codeLensProvider.updateResults(results);
     hoverProvider.updateResults(results);
     statusBarManager.updateResults(results);
     treeProvider.updateResults(results);
+    lastResults = results;
 
     if (showMessage) {
       vscode.commands.executeCommand('setContext', 'cssUnusedDetector.hasAnalysis', true);
@@ -211,6 +282,9 @@ async function runAnalysis(showMessage: boolean) {
       }
     }
   } catch (error) {
+    if (token.isCancellationRequested) {
+      return;
+    }
     console.error('Error during CSS analysis:', error);
     if (showMessage) {
       vscode.window.showErrorMessage(t('analysisError'));
@@ -223,6 +297,10 @@ async function runAnalysis(showMessage: boolean) {
 export function deactivate() {
   if (analysisTimer) {
     clearTimeout(analysisTimer);
+  }
+  if (cancellationSource) {
+    cancellationSource.cancel();
+    cancellationSource.dispose();
   }
   diagnosticsManager?.dispose();
   statusBarManager?.dispose();

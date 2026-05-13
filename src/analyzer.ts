@@ -12,6 +12,9 @@ export interface CSSSelector {
   useCount: number;
   locations: vscode.Location[];
   range?: vscode.Range;
+  source: 'stylesheet' | 'inline-style' | 'css-in-js';
+  scoped?: boolean;
+  externalOnly?: boolean;
 }
 
 export interface AnalysisResult {
@@ -20,17 +23,43 @@ export interface AnalysisResult {
   total: number;
 }
 
+type SelectorAstNode = {
+  type?: string;
+  value?: string;
+  parent?: SelectorAstNode;
+  nodes?: SelectorAstNode[];
+};
+
 export class CSSAnalyzer {
   private cssFiles: vscode.Uri[] = [];
   private codeFiles: vscode.Uri[] = [];
   private selectors: Map<string, CSSSelector[]> = new Map();
 
-  async analyzeWorkspace(workspaceFolder: vscode.WorkspaceFolder): Promise<AnalysisResult> {
+  /**
+   * Read file content preferring the in-memory (dirty) buffer of open editors.
+   * Falls back to disk if the file is not open.
+   */
+  private async readFileContent(uri: vscode.Uri): Promise<string> {
+    const openDoc = vscode.workspace.textDocuments.find(
+      doc => doc.uri.fsPath === uri.fsPath
+    );
+    if (openDoc) {
+      return openDoc.getText();
+    }
+    const content = await vscode.workspace.fs.readFile(uri);
+    return new TextDecoder().decode(content);
+  }
+
+  async analyzeWorkspace(workspaceFolder: vscode.WorkspaceFolder, token?: vscode.CancellationToken): Promise<AnalysisResult> {
     this.selectors.clear();
 
     await this.findFiles(workspaceFolder);
-    await this.extractSelectors();
-    await this.checkUsage();
+    if (token?.isCancellationRequested) { return this.getResults(); }
+
+    await this.extractSelectors(token);
+    if (token?.isCancellationRequested) { return this.getResults(); }
+
+    await this.checkUsage(token);
 
     return this.getResults();
   }
@@ -63,16 +92,18 @@ export class CSSAnalyzer {
     );
   }
 
-  private async extractSelectors(): Promise<void> {
+  private async extractSelectors(token?: vscode.CancellationToken): Promise<void> {
     const cfg = getConfig();
 
     // 1. Process dedicated CSS/SCSS files
     for (const file of this.cssFiles) {
+      if (token?.isCancellationRequested) { return; }
       try {
-        const content = await vscode.workspace.fs.readFile(file);
-        const text = new TextDecoder().decode(content);
+        const text = await this.readFileContent(file);
         const isSCSS = file.fsPath.endsWith('.scss') || file.fsPath.endsWith('.sass');
-        this.processCSSContent(text, file, isSCSS, 0);
+        this.processCSSContent(text, file, isSCSS, 0, {
+          source: 'stylesheet'
+        });
       } catch (error) {
         console.error(`Error parsing file ${file.fsPath}:`, error);
       }
@@ -81,9 +112,9 @@ export class CSSAnalyzer {
     // 2. Process inline <style> blocks in code files
     if (cfg.scanStyleBlocks) {
       for (const file of this.codeFiles) {
+        if (token?.isCancellationRequested) { return; }
         try {
-          const content = await vscode.workspace.fs.readFile(file);
-          const text = new TextDecoder().decode(content);
+          const text = await this.readFileContent(file);
 
           const styleRegex = /<style([^>]*)>([\s\S]*?)<\/style>/gi;
           let match;
@@ -92,9 +123,13 @@ export class CSSAnalyzer {
             const styleContent = match[2];
             const textBefore = text.substring(0, match.index);
             const styleTagLine = match[0].substring(0, match[0].indexOf('>'));
-            const lineOffset = (textBefore.match(/\n/g) || []).length + (styleTagLine.match(/\n/g) || []).length + 1;
+            const lineOffset = (textBefore.match(/\n/g) || []).length + (styleTagLine.match(/\n/g) || []).length;
             const isSCSS = /lang\s*=\s*["']scss["']/i.test(attributes);
-            this.processCSSContent(styleContent, file, isSCSS, lineOffset);
+            const isScoped = /\bscoped\b/i.test(attributes);
+            this.processCSSContent(styleContent, file, isSCSS, lineOffset, {
+              source: 'inline-style',
+              scoped: isScoped
+            });
           }
 
           // CSS-in-JS: css`...`
@@ -104,7 +139,9 @@ export class CSSAnalyzer {
               const styleContent = match[1];
               const textBefore = text.substring(0, match.index);
               const lineOffset = (textBefore.match(/\n/g) || []).length;
-              this.processCSSContent(styleContent, file, false, lineOffset);
+              this.processCSSContent(styleContent, file, false, lineOffset, {
+                source: 'css-in-js'
+              });
             }
           }
         } catch (error) {
@@ -114,7 +151,13 @@ export class CSSAnalyzer {
     }
   }
 
-  private processCSSContent(text: string, file: vscode.Uri, isSCSS: boolean, lineOffset: number): void {
+  private processCSSContent(
+    text: string,
+    file: vscode.Uri,
+    isSCSS: boolean,
+    lineOffset: number,
+    context: { source: 'stylesheet' | 'inline-style' | 'css-in-js'; scoped?: boolean }
+  ): void {
     try {
       const root = postcss.parse(text, {
         syntax: isSCSS ? postcssScss : undefined
@@ -153,7 +196,10 @@ export class CSSAnalyzer {
             used: false,
             useCount: 0,
             locations: [],
-            range: range
+            range: range,
+            source: context.source,
+            scoped: context.scoped,
+            externalOnly: ext.externalOnly
           });
         }
       });
@@ -162,16 +208,24 @@ export class CSSAnalyzer {
     }
   }
 
-  private extractSelectorsFromRule(selector: string): Array<{type: string; value: string}> {
-    const extracted: Array<{type: string; value: string}> = [];
+  private extractSelectorsFromRule(selector: string): Array<{type: string; value: string; externalOnly: boolean}> {
+    const extracted: Array<{type: string; value: string; externalOnly: boolean}> = [];
 
     try {
       selectorParser(selectors => {
         selectors.walkClasses(sel => {
-          extracted.push({ type: 'class', value: sel.value });
+          extracted.push({
+            type: 'class',
+            value: sel.value,
+            externalOnly: this.isInsideDeepOrGlobal(sel) || this.isAfterDeepOrGlobalPseudo(sel)
+          });
         });
         selectors.walkIds(sel => {
-          extracted.push({ type: 'id', value: sel.value });
+          extracted.push({
+            type: 'id',
+            value: sel.value,
+            externalOnly: this.isInsideDeepOrGlobal(sel) || this.isAfterDeepOrGlobalPseudo(sel)
+          });
         });
       }).processSync(selector);
     } catch (error) {
@@ -181,7 +235,74 @@ export class CSSAnalyzer {
     return extracted;
   }
 
-  private async checkUsage(): Promise<void> {
+  private isDeepOrGlobalPseudo(pseudoValueRaw: string): boolean {
+    const pseudoValue = String(pseudoValueRaw || '').toLowerCase();
+    return pseudoValue === ':deep'
+      || pseudoValue === ':global'
+      || pseudoValue === '::v-deep'
+      || pseudoValue === ':v-deep'
+      || pseudoValue === '::v-global'
+      || pseudoValue === ':v-global';
+  }
+
+  private isInsideDeepOrGlobal(node: SelectorAstNode | undefined): boolean {
+    let current = node?.parent;
+
+    while (current) {
+      if (current.type === 'pseudo') {
+        if (this.isDeepOrGlobalPseudo(String(current.value || ''))) {
+          return true;
+        }
+      }
+      current = current.parent;
+    }
+
+    return false;
+  }
+
+  private isAfterDeepOrGlobalPseudo(node: SelectorAstNode | undefined): boolean {
+    if (!node) {
+      return false;
+    }
+
+    const topLevelSelector = this.getTopLevelSelector(node);
+    if (!topLevelSelector?.nodes || topLevelSelector.nodes.length === 0) {
+      return false;
+    }
+
+    let directChild: SelectorAstNode = node;
+    while (directChild?.parent && directChild.parent !== topLevelSelector) {
+      directChild = directChild.parent;
+    }
+
+    const nodeIndex = topLevelSelector.nodes.indexOf(directChild);
+    if (nodeIndex <= 0) {
+      return false;
+    }
+
+    for (let i = 0; i < nodeIndex; i++) {
+      const candidate = topLevelSelector.nodes[i];
+      if (candidate?.type === 'pseudo' && this.isDeepOrGlobalPseudo(String(candidate.value || ''))) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private getTopLevelSelector(node: SelectorAstNode | undefined): SelectorAstNode | undefined {
+    let current = node;
+    while (current) {
+      if (current.type === 'selector' && current.parent?.type === 'root') {
+        return current;
+      }
+      current = current.parent;
+    }
+
+    return undefined;
+  }
+
+  private async checkUsage(token?: vscode.CancellationToken): Promise<void> {
     // Build a complete index of all class and id usages across all code files in a single pass
     const classLocations = new Map<string, vscode.Location[]>();
     const idLocations = new Map<string, vscode.Location[]>();
@@ -201,19 +322,20 @@ export class CSSAnalyzer {
     }
 
     for (const codeFile of this.codeFiles) {
+      if (token?.isCancellationRequested) { return; }
       try {
-        const content = await vscode.workspace.fs.readFile(codeFile);
-        const text = new TextDecoder().decode(content);
+        const text = await this.readFileContent(codeFile);
+        const scanText = this.maskStyleBlocks(text);
 
         // Build a line-start offset index for fast line/char calculation
-        const lineStarts = this.buildLineStarts(text);
+        const lineStarts = this.buildLineStarts(scanText);
         const cfg = getConfig();
 
         // Scan for class usages
-        this.scanClassAttributes(text, codeFile, lineStarts, classLocations, classNames, cfg);
+        this.scanClassAttributes(scanText, codeFile, lineStarts, classLocations, classNames, cfg);
 
         // Scan for id usages
-        this.scanIdAttributes(text, codeFile, lineStarts, idLocations, idNames, cfg);
+        this.scanIdAttributes(scanText, codeFile, lineStarts, idLocations, idNames, cfg);
 
       } catch (error) {
         console.error(`Error reading file ${codeFile.fsPath}:`, error);
@@ -227,20 +349,85 @@ export class CSSAnalyzer {
       const value = key.substring(colonIdx + 1);
       const locations = type === 'class' ? classLocations.get(value) : idLocations.get(value);
 
-      if (locations && locations.length > 0) {
-        for (const selector of selectorsList) {
-          selector.used = true;
-          selector.useCount = locations.length;
-          selector.locations = [...locations];
-        }
-      } else {
-        for (const selector of selectorsList) {
-          selector.used = false;
-          selector.useCount = 0;
-          selector.locations = [];
-        }
+      for (const selector of selectorsList) {
+        const resolvedLocations = this.resolveLocationsForSelector(selector, locations);
+
+        selector.used = resolvedLocations.length > 0;
+        selector.useCount = resolvedLocations.length;
+        selector.locations = resolvedLocations;
       }
     }
+  }
+
+  private maskStyleBlocks(text: string): string {
+    const styleRegex = /<style\b[^>]*>[\s\S]*?<\/style>/gi;
+    return text.replace(styleRegex, match => match.replace(/[^\r\n]/g, ' '));
+  }
+
+  private resolveLocationsForSelector(selector: CSSSelector, locations: vscode.Location[] | undefined): vscode.Location[] {
+    if (!locations || locations.length === 0) {
+      return [];
+    }
+
+    const isScopedInlineStyle = selector.source === 'inline-style' && selector.scoped === true;
+
+    let filteredLocations: vscode.Location[];
+    if (!isScopedInlineStyle) {
+      filteredLocations = [...locations];
+    } else if (selector.externalOnly === true) {
+      // deep/global selectors can be matched from local or external templates
+      filteredLocations = [...locations];
+    } else {
+      filteredLocations = locations.filter(loc => loc.uri.fsPath === selector.file.fsPath);
+    }
+
+    return this.sortAndDeduplicateLocations(filteredLocations, selector.file.fsPath);
+  }
+
+  private sortAndDeduplicateLocations(locations: vscode.Location[], preferredFilePath: string): vscode.Location[] {
+    if (locations.length === 0) {
+      return [];
+    }
+
+    const seen = new Set<string>();
+    const deduped: vscode.Location[] = [];
+
+    for (const loc of locations) {
+      const key = `${loc.uri.fsPath}:${loc.range.start.line}:${loc.range.start.character}:${loc.range.end.line}:${loc.range.end.character}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      deduped.push(loc);
+    }
+
+    deduped.sort((a, b) => {
+      const aPreferred = a.uri.fsPath === preferredFilePath ? 0 : 1;
+      const bPreferred = b.uri.fsPath === preferredFilePath ? 0 : 1;
+      if (aPreferred !== bPreferred) {
+        return aPreferred - bPreferred;
+      }
+
+      if (a.uri.fsPath !== b.uri.fsPath) {
+        return a.uri.fsPath.localeCompare(b.uri.fsPath);
+      }
+
+      if (a.range.start.line !== b.range.start.line) {
+        return a.range.start.line - b.range.start.line;
+      }
+
+      if (a.range.start.character !== b.range.start.character) {
+        return a.range.start.character - b.range.start.character;
+      }
+
+      if (a.range.end.line !== b.range.end.line) {
+        return a.range.end.line - b.range.end.line;
+      }
+
+      return a.range.end.character - b.range.end.character;
+    });
+
+    return deduped;
   }
 
   private buildLineStarts(text: string): number[] {
@@ -403,7 +590,7 @@ export class CSSAnalyzer {
     }
 
     // 6. Pug/Jade
-    if (cfg.scanPugPatterns) {
+    if (cfg.scanPugPatterns && this.shouldScanPugPatternsInFile(uri, text)) {
       const pugRegex = /^[ \t]*(?:[a-zA-Z][a-zA-Z0-9]*)?(\.(?:[a-zA-Z_][a-zA-Z0-9_-]*)(?:\.(?:[a-zA-Z_][a-zA-Z0-9_-]*))*)/gm;
       while ((m = pugRegex.exec(text)) !== null) {
         const dotClasses = m[1];
@@ -418,6 +605,15 @@ export class CSSAnalyzer {
         }
       }
     }
+  }
+
+  private shouldScanPugPatternsInFile(uri: vscode.Uri, text: string): boolean {
+    const lowerPath = uri.fsPath.toLowerCase();
+    if (lowerPath.endsWith('.pug') || lowerPath.endsWith('.jade') || lowerPath.endsWith('.slim') || lowerPath.endsWith('.haml')) {
+      return true;
+    }
+
+    return /<template[^>]*\blang\s*=\s*["'](?:pug|jade|slim|haml)["'][^>]*>/i.test(text);
   }
 
   private extractClassNamesFromValue(
@@ -495,25 +691,40 @@ export class CSSAnalyzer {
   }
 
   private getResults(): AnalysisResult {
-    const unused: CSSSelector[] = [];
-    const used: CSSSelector[] = [];
-
-    // Deduplicate by file+line to avoid showing duplicate CodeLenses
-    const seen = new Set<string>();
+    const mergedByRule = new Map<string, CSSSelector>();
 
     for (const selectorsList of this.selectors.values()) {
       for (const selector of selectorsList) {
-        const dedupeKey = `${selector.file.fsPath}:${selector.line}:${selector.selector}`;
-        if (seen.has(dedupeKey)) {
+        const ruleKey = `${selector.file.fsPath}:${selector.line}:${selector.selector}`;
+        const existing = mergedByRule.get(ruleKey);
+
+        if (!existing) {
+          mergedByRule.set(ruleKey, {
+            ...selector,
+            locations: [...selector.locations]
+          });
           continue;
         }
-        seen.add(dedupeKey);
 
-        if (selector.used) {
-          used.push(selector);
-        } else {
-          unused.push(selector);
-        }
+        existing.used = existing.used || selector.used;
+        existing.locations = this.sortAndDeduplicateLocations(
+          [...existing.locations, ...selector.locations],
+          existing.file.fsPath
+        );
+      }
+    }
+
+    const unused: CSSSelector[] = [];
+    const used: CSSSelector[] = [];
+
+    for (const selector of mergedByRule.values()) {
+      selector.useCount = selector.locations.length;
+      selector.used = selector.used || selector.useCount > 0;
+
+      if (selector.used) {
+        used.push(selector);
+      } else {
+        unused.push(selector);
       }
     }
 

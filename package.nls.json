@@ -3,6 +3,8 @@
   "command.analyze.title": "CSS: Detect unused selectors",
   "command.openPanel.title": "CSS: Open analysis panel",
   "command.openSettings.title": "CSS: Open extension settings",
+  "command.removeUnusedInFile.title": "CSS: Remove unused selectors in current file",
+  "command.removeUnusedGlobally.title": "CSS: Remove all unused selectors in workspace",
   "config.title": "CSS/SCSS Unused Detector",
   "config.language.desc": "Extension display language",
   "config.language.enum.en": "English",

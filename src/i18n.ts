@@ -99,6 +99,32 @@ const translations: Translations = {
     es: 'Ignorar todos los selectores CSS no utilizados en este archivo'
   },
 
+  // === Cleanup ===
+  'cleanupNoResults': {
+    en: 'No analysis results available. Run the analysis first.',
+    es: 'No hay resultados de análisis. Ejecuta el análisis primero.'
+  },
+  'cleanupFileSuccess': {
+    en: '{count} unused rule(s) removed from current file',
+    es: '{count} regla(s) sin usar eliminada(s) del archivo actual'
+  },
+  'cleanupFileNone': {
+    en: 'No unused selectors to remove',
+    es: 'No hay selectores sin usar para eliminar'
+  },
+  'cleanupGlobalWarning': {
+    en: 'This will remove {count} unused CSS rule(s) across your workspace. This action may affect your frontend. It is recommended to commit your changes first.',
+    es: 'Se eliminarán {count} regla(s) CSS sin usar en todo el workspace. Esta acción puede afectar tu frontend. Se recomienda hacer commit de tus cambios antes.'
+  },
+  'cleanupGlobalConfirm': {
+    en: 'Remove all',
+    es: 'Eliminar todas'
+  },
+  'cleanupGlobalSuccess': {
+    en: '{rules} rule(s) removed from {files} file(s)',
+    es: '{rules} regla(s) eliminada(s) de {files} archivo(s)'
+  },
+
   // === Settings descriptions (used for documentation) ===
   'settingLanguageDesc': {
     en: 'Extension display language',
