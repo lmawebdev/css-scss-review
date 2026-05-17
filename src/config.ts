@@ -22,7 +22,8 @@ export interface ExtensionConfig {
   scanPugPatterns: boolean;
   scanStyleBlocks: boolean;
   scanCssInJs: boolean;
-
+  scanTags: boolean;
+  
   // Include / Exclude
   excludeFolders: string[];
   excludeFiles: string[];
@@ -76,6 +77,7 @@ export function getConfig(): ExtensionConfig {
     scanPugPatterns: config.get<boolean>('scanPugPatterns', true),
     scanStyleBlocks: config.get<boolean>('scanStyleBlocks', true),
     scanCssInJs: config.get<boolean>('scanCssInJs', true),
+    scanTags: config.get<boolean>('scanTags', true),
 
     excludeFolders: config.get<string[]>('excludeFolders', DEFAULT_EXCLUDE_FOLDERS),
     excludeFiles: config.get<string[]>('excludeFiles', []),

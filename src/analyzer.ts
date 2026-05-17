@@ -210,6 +210,7 @@ export class CSSAnalyzer {
 
   private extractSelectorsFromRule(selector: string): Array<{type: string; value: string; externalOnly: boolean}> {
     const extracted: Array<{type: string; value: string; externalOnly: boolean}> = [];
+    const cfg = getConfig();
 
     try {
       selectorParser(selectors => {
@@ -227,6 +228,15 @@ export class CSSAnalyzer {
             externalOnly: this.isInsideDeepOrGlobal(sel) || this.isAfterDeepOrGlobalPseudo(sel)
           });
         });
+        if (cfg.scanTags) {
+          selectors.walkTags(sel => {
+            extracted.push({
+              type: 'tag',
+              value: sel.value,
+              externalOnly: this.isInsideDeepOrGlobal(sel) || this.isAfterDeepOrGlobalPseudo(sel)
+            });
+          });
+        }
       }).processSync(selector);
     } catch (error) {
       console.error(`Error extracting selectors from "${selector}":`, error);
@@ -303,21 +313,25 @@ export class CSSAnalyzer {
   }
 
   private async checkUsage(token?: vscode.CancellationToken): Promise<void> {
-    // Build a complete index of all class and id usages across all code files in a single pass
+    // Build a complete index of all class, id and tag usages across all code files in a single pass
     const classLocations = new Map<string, vscode.Location[]>();
     const idLocations = new Map<string, vscode.Location[]>();
+    const tagLocations = new Map<string, vscode.Location[]>();
 
     // Collect only the names we actually need to search for
     const classNames = new Set<string>();
     const idNames = new Set<string>();
+    const tagNames = new Set<string>();
     for (const [key] of this.selectors) {
       const colonIdx = key.indexOf(':');
       const type = key.substring(0, colonIdx);
       const value = key.substring(colonIdx + 1);
       if (type === 'class') {
         classNames.add(value);
-      } else {
+      } else if (type === 'id') {
         idNames.add(value);
+      } else if (type === 'tag') {
+        tagNames.add(value);
       }
     }
 
@@ -337,6 +351,11 @@ export class CSSAnalyzer {
         // Scan for id usages
         this.scanIdAttributes(scanText, codeFile, lineStarts, idLocations, idNames, cfg);
 
+        // Scan for tag usages
+        if (cfg.scanTags && tagNames.size > 0) {
+          this.scanTagNames(scanText, codeFile, lineStarts, tagLocations, tagNames, cfg);
+        }
+
       } catch (error) {
         console.error(`Error reading file ${codeFile.fsPath}:`, error);
       }
@@ -347,7 +366,15 @@ export class CSSAnalyzer {
       const colonIdx = key.indexOf(':');
       const type = key.substring(0, colonIdx);
       const value = key.substring(colonIdx + 1);
-      const locations = type === 'class' ? classLocations.get(value) : idLocations.get(value);
+      
+      let locations: vscode.Location[] | undefined;
+      if (type === 'class') {
+        locations = classLocations.get(value);
+      } else if (type === 'id') {
+        locations = idLocations.get(value);
+      } else if (type === 'tag') {
+        locations = tagLocations.get(value);
+      }
 
       for (const selector of selectorsList) {
         const resolvedLocations = this.resolveLocationsForSelector(selector, locations);
@@ -684,6 +711,117 @@ export class CSSAnalyzer {
           const name = im[1];
           if (idNames.has(name)) {
             this.addLocationAtOffset(idLocations, name, uri, lineStarts, selectorStart + im.index + 1, name.length);
+          }
+        }
+      }
+    }
+  }
+
+  private scanTagNames(
+    text: string,
+    uri: vscode.Uri,
+    lineStarts: number[],
+    tagLocations: Map<string, vscode.Location[]>,
+    tagNames: Set<string>,
+    cfg: ExtensionConfig
+  ) {
+    let m;
+
+    // 1. Scan for HTML tags: <tag-name ...
+    const tagRegex = /<\s*([a-zA-Z_][a-zA-Z0-9_-]*)/g;
+    while ((m = tagRegex.exec(text)) !== null) {
+      const name = m[1];
+      const nameLower = name.toLowerCase();
+      let matchedName: string | undefined;
+      if (tagNames.has(name)) {
+        matchedName = name;
+      } else if (tagNames.has(nameLower)) {
+        matchedName = nameLower;
+      }
+
+      if (matchedName) {
+        const nameStart = m.index + m[0].indexOf(name);
+        this.addLocationAtOffset(tagLocations, matchedName, uri, lineStarts, nameStart, name.length);
+      }
+    }
+
+    // 2. DOM API tag name scans
+    if (cfg.scanDomApi) {
+      const getByTagRegex = /getElementsByTagName(?:NS)?\s*\(\s*(?:['"`][^'"`]*['"`]\s*,\s*)?['"`]([a-zA-Z_][a-zA-Z0-9_-]*)['"`]\s*\)/g;
+      while ((m = getByTagRegex.exec(text)) !== null) {
+        const name = m[1];
+        const nameLower = name.toLowerCase();
+        let matchedName: string | undefined;
+        if (tagNames.has(name)) {
+          matchedName = name;
+        } else if (tagNames.has(nameLower)) {
+          matchedName = nameLower;
+        }
+
+        if (matchedName) {
+          const nameStart = m.index + m[0].indexOf(name);
+          this.addLocationAtOffset(tagLocations, matchedName, uri, lineStarts, nameStart, name.length);
+        }
+      }
+
+      const createElementRegex = /createElement\s*\(\s*['"`]([a-zA-Z_][a-zA-Z0-9_-]*)['"`]\s*\)/g;
+      while ((m = createElementRegex.exec(text)) !== null) {
+        const name = m[1];
+        const nameLower = name.toLowerCase();
+        let matchedName: string | undefined;
+        if (tagNames.has(name)) {
+          matchedName = name;
+        } else if (tagNames.has(nameLower)) {
+          matchedName = nameLower;
+        }
+
+        if (matchedName) {
+          const nameStart = m.index + m[0].indexOf(name);
+          this.addLocationAtOffset(tagLocations, matchedName, uri, lineStarts, nameStart, name.length);
+        }
+      }
+
+      const qsRegex = /querySelector(?:All)?\s*\(\s*['"`]([^'"`]+)['"`]\s*\)/g;
+      while ((m = qsRegex.exec(text)) !== null) {
+        const selectorStr = m[1];
+        const selectorStart = m.index + m[0].indexOf(selectorStr);
+        try {
+          selectorParser(selectors => {
+            selectors.walkTags(sel => {
+              const name = sel.value;
+              const nameLower = name.toLowerCase();
+              let matchedName: string | undefined;
+              if (tagNames.has(name)) {
+                matchedName = name;
+              } else if (tagNames.has(nameLower)) {
+                matchedName = nameLower;
+              }
+
+              if (matchedName) {
+                const offset = (sel as any).sourceIndex ?? selectorStr.indexOf(name);
+                this.addLocationAtOffset(tagLocations, matchedName, uri, lineStarts, selectorStart + offset, name.length);
+              }
+            });
+          }).processSync(selectorStr);
+        } catch (e) {
+          const wordRegex = /\b([a-zA-Z_][a-zA-Z0-9_-]*)\b/g;
+          let wm;
+          while ((wm = wordRegex.exec(selectorStr)) !== null) {
+            const name = wm[1];
+            const precedingChar = selectorStr.charAt(wm.index - 1);
+            if (precedingChar !== '.' && precedingChar !== '#' && precedingChar !== ':' && precedingChar !== '[' && precedingChar !== '@') {
+              const nameLower = name.toLowerCase();
+              let matchedName: string | undefined;
+              if (tagNames.has(name)) {
+                matchedName = name;
+              } else if (tagNames.has(nameLower)) {
+                matchedName = nameLower;
+              }
+
+              if (matchedName) {
+                this.addLocationAtOffset(tagLocations, matchedName, uri, lineStarts, selectorStart + wm.index, name.length);
+              }
+            }
           }
         }
       }
