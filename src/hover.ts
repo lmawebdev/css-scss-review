@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import { AnalysisResult, CSSSelector } from './analyzer';
+import { confidenceIcon, confidenceLabel } from './confidence';
+import { formatSpecificity } from './specificity';
 import { t } from './i18n';
 
 export class CSSHoverProvider implements vscode.HoverProvider {
@@ -49,7 +51,17 @@ export class CSSHoverProvider implements vscode.HoverProvider {
 
         md.appendMarkdown(`✅ **${selector.selector}**: ${countText}\n\n`);
 
-        if (selector.status === 'probable') {
+        if (selector.specificity) {
+          md.appendMarkdown(`${t('hoverSpecificity', { spec: formatSpecificity(selector.specificity) })}\n\n`);
+        }
+
+        if (selector.confidence !== undefined) {
+          md.appendMarkdown(`${t('hoverConfidence', { 
+            icon: confidenceIcon(selector.confidence), 
+            score: selector.confidence,
+            label: confidenceLabel(selector.confidence)
+          })}\n\n`);
+        } else if (selector.status === 'probable') {
           md.appendMarkdown(`⚠️ ${t('hoverProbable')}\n\n`);
         }
 
@@ -61,6 +73,11 @@ export class CSSHoverProvider implements vscode.HoverProvider {
         }
       } else {
         md.appendMarkdown(`❌ **${selector.selector}**: ${t('noReferencesFound')}\n\n`);
+        
+        if (selector.specificity) {
+          md.appendMarkdown(`${t('hoverSpecificity', { spec: formatSpecificity(selector.specificity) })}\n\n`);
+        }
+        
         md.appendMarkdown(t('hoverNotUsed'));
       }
 

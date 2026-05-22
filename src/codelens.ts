@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { AnalysisResult } from './analyzer';
 import { getConfig } from './config';
+import { confidenceIcon } from './confidence';
 import { t } from './i18n';
 
 export class CSSCodeLensProvider implements vscode.CodeLensProvider {
@@ -8,7 +9,9 @@ export class CSSCodeLensProvider implements vscode.CodeLensProvider {
   public readonly onDidChangeCodeLenses: vscode.Event<void> = this._onDidChangeCodeLenses.event;
   private results: AnalysisResult | undefined;
 
-  constructor() {}
+  constructor() {
+    // empty
+  }
 
   public updateResults(results: AnalysisResult) {
     this.results = results;
@@ -70,7 +73,9 @@ export class CSSCodeLensProvider implements vscode.CodeLensProvider {
         ? t('noReferences', { icon })
         : t('references', { count: useCount, plural });
 
-      if (selector.status === 'probable') {
+      if (selector.confidence !== undefined) {
+        title += ` ${confidenceIcon(selector.confidence)} ${selector.confidence}%`;
+      } else if (selector.status === 'probable') {
         title += t('codeLensProbable');
       }
 

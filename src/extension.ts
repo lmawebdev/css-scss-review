@@ -9,6 +9,8 @@ import { CSSHoverProvider } from './hover';
 import { CSSUnusedTreeProvider } from './treeview';
 import { CSSIgnoreCodeActionProvider } from './codeactions';
 import { removeUnusedInFile, removeUnusedGlobally } from './cleanup';
+import { exportResults, ExportFormat } from './export';
+import { DashboardPanel } from './webview';
 
 let analyzer: CSSAnalyzer;
 let diagnosticsManager: DiagnosticsManager;
@@ -118,12 +120,30 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.commands.executeCommand('setContext', 'cssUnusedDetector.hasAnalysis', true);
       // Focus the view in the explorer
       vscode.commands.executeCommand('cssUnusedDetector.focus');
+      if (lastResults) {
+        DashboardPanel.show(lastResults);
+      }
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('css-unused-detector.openSettings', () => {
       vscode.commands.executeCommand('workbench.action.openSettings', 'cssUnusedDetector');
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('css-unused-detector.exportResults', async () => {
+      if (!lastResults) {
+        vscode.window.showWarningMessage(t('cleanupNoResults'));
+        return;
+      }
+      const format = await vscode.window.showQuickPick(['json', 'csv', 'html'], {
+        placeHolder: 'Select export format'
+      });
+      if (format) {
+        await exportResults(lastResults, format as ExportFormat);
+      }
     })
   );
 
@@ -270,6 +290,10 @@ async function runAnalysis(showMessage: boolean) {
     statusBarManager.updateResults(results);
     treeProvider.updateResults(results);
     lastResults = results;
+
+    if (DashboardPanel.currentPanel) {
+      DashboardPanel.currentPanel.update(results);
+    }
 
     if (showMessage) {
       vscode.commands.executeCommand('setContext', 'cssUnusedDetector.hasAnalysis', true);

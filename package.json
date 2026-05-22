@@ -3,7 +3,7 @@
   "displayName": "CSS/SCSS Unused Detector",
   "publisher": "alex-web-dev",
   "description": "%extension.description%",
-  "version": "1.0.18",
+  "version": "1.1.1",
   "repository": {
     "type": "git",
     "url": "https://github.com/lmawebdev/css-scss-review"
@@ -39,6 +39,12 @@
         "title": "%command.openSettings.title%",
         "category": "CSS Unused Detector",
         "icon": "$(gear)"
+      },
+      {
+        "command": "css-unused-detector.exportResults",
+        "title": "Export Analysis Results",
+        "category": "CSS Unused Detector",
+        "icon": "$(export)"
       },
       {
         "command": "css-unused-detector.removeUnusedInFile",
@@ -124,6 +130,23 @@
             "%config.diagnosticSeverity.hint%"
           ],
           "description": "%config.diagnosticSeverity.desc%"
+        },
+        "cssUnusedDetector.confidenceThreshold": {
+          "type": "number",
+          "default": 50,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Minimum confidence score (0-100) to consider a probable match as valid. Diagnoses will only show for selectors below this threshold."
+        },
+        "cssUnusedDetector.maxFileSizeMB": {
+          "type": "number",
+          "default": 1,
+          "description": "Maximum file size in MB to scan for references to avoid memory issues."
+        },
+        "cssUnusedDetector.concurrencyLimit": {
+          "type": "number",
+          "default": 8,
+          "description": "Number of files to read and parse concurrently."
         },
         "cssUnusedDetector.analyzeOnSave": {
           "type": "boolean",
@@ -286,14 +309,19 @@
           "group": "navigation@1"
         },
         {
-          "command": "css-unused-detector.removeUnusedGlobally",
+          "command": "css-unused-detector.exportResults",
           "when": "view == cssUnusedDetector",
           "group": "navigation@2"
         },
         {
-          "command": "css-unused-detector.openSettings",
+          "command": "css-unused-detector.removeUnusedGlobally",
           "when": "view == cssUnusedDetector",
           "group": "navigation@3"
+        },
+        {
+          "command": "css-unused-detector.openSettings",
+          "when": "view == cssUnusedDetector",
+          "group": "navigation@4"
         }
       ],
       "editor/title": [

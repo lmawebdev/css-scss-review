@@ -8,6 +8,11 @@ export interface ExtensionConfig {
   codeLensEnabled: boolean;
   diagnosticsEnabled: boolean;
   diagnosticSeverity: 'error' | 'warning' | 'information' | 'hint';
+  confidenceThreshold: number;
+
+  // Limits and Perf
+  maxFileSizeMB: number;
+  concurrencyLimit: number;
 
   // Analysis triggers
   analyzeOnSave: boolean;
@@ -65,6 +70,10 @@ export function getConfig(): ExtensionConfig {
     codeLensEnabled: config.get<boolean>('codeLensEnabled', true),
     diagnosticsEnabled: config.get<boolean>('diagnosticsEnabled', true),
     diagnosticSeverity: config.get<'error' | 'warning' | 'information' | 'hint'>('diagnosticSeverity', 'warning'),
+    confidenceThreshold: config.get<number>('confidenceThreshold', 50),
+
+    maxFileSizeMB: config.get<number>('maxFileSizeMB', 1),
+    concurrencyLimit: config.get<number>('concurrencyLimit', 8),
 
     analyzeOnSave: config.get<boolean>('analyzeOnSave', true),
     analyzeOnType: config.get<boolean>('analyzeOnType', true),

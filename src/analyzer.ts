@@ -1,8 +1,13 @@
 import * as vscode from 'vscode';
-import postcss from 'postcss';
+import postcss, { Rule, AtRule, Root } from 'postcss';
 import postcssScss from 'postcss-scss';
 import selectorParser from 'postcss-selector-parser';
 import { getConfig, ExtensionConfig } from './config';
+import { resolveNestedSelector } from './nesting-resolver';
+import { calculateSpecificity, Specificity } from './specificity';
+import { calculateConfidence, ConfidenceFactors } from './confidence';
+import { createExtractors, ScanContext, buildLineStarts } from './extractors';
+import type { UsageExtractor } from './extractors';
 
 export interface CSSSelector {
   selector: string;
@@ -24,6 +29,9 @@ export interface CSSSelector {
   groupCount?: number;
   matchedGroupsCount?: number;
   hasSelectorList?: boolean;
+  specificity?: Specificity;
+  confidence?: number;
+  resolvedSelectors?: string[];
 }
 
 export interface AnalysisResult {
@@ -63,22 +71,53 @@ type ExtractedSelectorMeta = {
   hasSelectorList: boolean;
 };
 
+/** Maximum file size in bytes to read (default 1MB) */
+const MAX_FILE_SIZE = 1 * 1024 * 1024;
+
+/** Concurrency limit for parallel file reads */
+const CONCURRENCY_LIMIT = 8;
+
 export class CSSAnalyzer {
   private cssFiles: vscode.Uri[] = [];
   private codeFiles: vscode.Uri[] = [];
   private selectors: Map<string, CSSSelector[]> = new Map();
+  private extractors: UsageExtractor[] = [];
 
-  private async readFileContent(uri: vscode.Uri): Promise<string> {
+  /** Cache of extracted selector metadata keyed by selector string */
+  private selectorMetaCache: Map<string, ExtractedSelectorMeta> = new Map();
+
+  /** Set of classes referenced by @extend */
+  private extendedClasses: Set<string> = new Set();
+
+  /** Cache of class groups (co-occurring classes) per file */
+  private fileClassGroups: Map<string, Set<string>> = new Map();
+
+  constructor() {
+    this.extractors = createExtractors();
+  }
+
+  private async readFileContent(uri: vscode.Uri): Promise<string | null> {
     const openDoc = vscode.workspace.textDocuments.find(doc => doc.uri.fsPath === uri.fsPath);
     if (openDoc) {
       return openDoc.getText();
     }
-    const content = await vscode.workspace.fs.readFile(uri);
-    return new TextDecoder().decode(content);
+    try {
+      const stat = await vscode.workspace.fs.stat(uri);
+      if (stat.size > MAX_FILE_SIZE) {
+        return null;
+      }
+      const content = await vscode.workspace.fs.readFile(uri);
+      return new TextDecoder().decode(content);
+    } catch {
+      return null;
+    }
   }
 
   async analyzeWorkspace(workspaceFolder: vscode.WorkspaceFolder, token?: vscode.CancellationToken): Promise<AnalysisResult> {
     this.selectors.clear();
+    this.selectorMetaCache.clear();
+    this.extendedClasses.clear();
+    this.fileClassGroups.clear();
 
     await this.findFiles(workspaceFolder);
     if (token?.isCancellationRequested) {
@@ -113,35 +152,45 @@ export class CSSAnalyzer {
   private async extractSelectors(token?: vscode.CancellationToken): Promise<void> {
     const cfg = getConfig();
 
-    for (const file of this.cssFiles) {
-      if (token?.isCancellationRequested) {
-        return;
-      }
+    // Process CSS files with concurrency limit
+    await this.processWithConcurrency(this.cssFiles, async (file) => {
+      if (token?.isCancellationRequested) return;
       try {
         const text = await this.readFileContent(file);
-        const isSCSS = file.fsPath.endsWith('.scss') || file.fsPath.endsWith('.sass');
+        if (!text) return;
+
+        // Bug #3: .sass uses indented syntax — skip it, postcss-scss can't parse it
+        const isSASS = file.fsPath.endsWith('.sass');
+        if (isSASS) return;
+
+        const isSCSS = file.fsPath.endsWith('.scss');
         this.processCSSContent(text, file, isSCSS, 0, { source: 'stylesheet' });
       } catch (error) {
         console.error(`Error parsing file ${file.fsPath}:`, error);
       }
-    }
+    }, CONCURRENCY_LIMIT);
 
     if (cfg.scanStyleBlocks) {
-      for (const file of this.codeFiles) {
-        if (token?.isCancellationRequested) {
-          return;
-        }
+      await this.processWithConcurrency(this.codeFiles, async (file) => {
+        if (token?.isCancellationRequested) return;
         try {
           const text = await this.readFileContent(file);
+          if (!text) return;
 
           const styleRegex = /<style([^>]*)>([\s\S]*?)<\/style>/gi;
           let match: RegExpExecArray | null;
           while ((match = styleRegex.exec(text)) !== null) {
             const attributes = match[1];
             const styleContent = match[2];
-            const textBefore = text.substring(0, match.index);
-            const styleTagLine = match[0].substring(0, match[0].indexOf('>'));
-            const lineOffset = (textBefore.match(/\n/g) || []).length + (styleTagLine.match(/\n/g) || []).length;
+
+            // Bug #1: lineOffset is only the lines before the match start + the lines
+            // within the opening tag (up to the closing >). PostCSS line 1 corresponds
+            // to the first line of styleContent (match[2]), which starts right after >.
+            const matchStartOffset = match.index;
+            const openingTagEnd = match[0].indexOf('>') + 1;
+            const textUpToContent = text.substring(0, matchStartOffset + openingTagEnd);
+            const lineOffset = (textUpToContent.match(/\n/g) || []).length;
+
             const isSCSS = /lang\s*=\s*["']scss["']/i.test(attributes);
             const isScoped = /\bscoped\b/i.test(attributes);
             this.processCSSContent(styleContent, file, isSCSS, lineOffset, {
@@ -162,8 +211,41 @@ export class CSSAnalyzer {
         } catch (error) {
           console.error(`Error parsing file ${file.fsPath} for styles:`, error);
         }
+      }, CONCURRENCY_LIMIT);
+    }
+  }
+
+  /**
+   * Process an array of items with a concurrency limit.
+   */
+  private async processWithConcurrency<T>(
+    items: T[],
+    processor: (item: T) => Promise<void>,
+    limit: number
+  ): Promise<void> {
+    const executing: Promise<void>[] = [];
+
+    for (const item of items) {
+      const p = processor(item).catch(() => { /* ignore */ });
+      executing.push(p);
+
+      if (executing.length >= limit) {
+        await Promise.race(executing);
+        // Remove resolved promises
+        for (let i = executing.length - 1; i >= 0; i--) {
+          // Check if promise is settled by racing with an immediate resolve
+          const settled = await Promise.race([
+            executing[i].then(() => true),
+            Promise.resolve(false)
+          ]);
+          if (settled) {
+            executing.splice(i, 1);
+          }
+        }
       }
     }
+
+    await Promise.all(executing);
   }
 
   private processCSSContent(
@@ -174,18 +256,38 @@ export class CSSAnalyzer {
     context: { source: 'stylesheet' | 'inline-style' | 'css-in-js'; scoped?: boolean }
   ): void {
     try {
-      const root = postcss.parse(text, { syntax: isSCSS ? postcssScss : undefined } as any);
+      const root: Root = postcss.parse(text, { syntax: isSCSS ? postcssScss : undefined } as any);
 
-      root.walkRules(rule => {
+      // Feature: @extend/@apply awareness — collect extended classes
+      root.walkAtRules(atRule => {
+        if (atRule.name === 'extend') {
+          // @extend .className or @extend .className !optional
+          const extendMatch = atRule.params.match(/\.([a-zA-Z_][\w-]*)/);
+          if (extendMatch) {
+            this.extendedClasses.add(extendMatch[1]);
+          }
+        } else if (atRule.name === 'apply') {
+          // @apply bg-red-500 text-white
+          const applyClasses = atRule.params.split(/\s+/);
+          for (const cls of applyClasses) {
+            const cleanCls = cls.replace(/^[.!]/, ''); // remove dot or !important if present
+            if (cleanCls) {
+              this.extendedClasses.add(cleanCls);
+            }
+          }
+        }
+      });
+
+      root.walkRules((rule: Rule) => {
         const prevNode = rule.prev();
-        if (prevNode && prevNode.type === 'comment' && prevNode.text.includes('css-unused-ignore')) {
+        if (prevNode && prevNode.type === 'comment' && (prevNode as any).text?.includes('css-unused-ignore')) {
           return;
         }
 
-        let current = rule.parent;
+        let current: any = rule.parent;
         let isKeyframes = false;
         while (current) {
-          if (current.type === 'atrule' && (current as any).name?.match(/keyframes/i)) {
+          if (current.type === 'atrule' && current.name?.match(/keyframes/i)) {
             isKeyframes = true;
             break;
           }
@@ -206,10 +308,28 @@ export class CSSAnalyzer {
           new vscode.Position(endLine, endChar)
         );
 
-        const extractedMeta = this.extractSelectorsFromRule(selector);
+        // Feature: SCSS nesting resolution
+        let resolvedSelectors: string[] | undefined;
+        if (isSCSS && rule.parent && rule.parent.type === 'rule') {
+          try {
+            resolvedSelectors = resolveNestedSelector(rule);
+          } catch {
+            // Fallback: use selector as-is
+          }
+        }
+
+        // Use resolved selectors for extraction if available, otherwise original
+        const selectorToExtract = resolvedSelectors && resolvedSelectors.length > 0
+          ? resolvedSelectors.join(', ')
+          : selector;
+
+        const extractedMeta = this.extractSelectorsFromRuleCached(selectorToExtract);
         if (extractedMeta.parts.length === 0) {
           return;
         }
+
+        // Calculate specificity
+        const specificity = calculateSpecificity(selector);
 
         for (const ext of extractedMeta.parts) {
           const key = `${ext.type}:${ext.value}`;
@@ -234,13 +354,27 @@ export class CSSAnalyzer {
             selectorGroups: extractedMeta.groups.map(g => g.selector),
             groupCount: extractedMeta.groups.length,
             matchedGroupsCount: 0,
-            hasSelectorList: extractedMeta.hasSelectorList
+            hasSelectorList: extractedMeta.hasSelectorList,
+            specificity,
+            resolvedSelectors
           });
         }
       });
     } catch (error) {
       console.error(`Error processing CSS content in ${file.fsPath}:`, error);
     }
+  }
+
+  /**
+   * Cached version of extractSelectorsFromRule to avoid double parsing in getResults.
+   */
+  private extractSelectorsFromRuleCached(selector: string): ExtractedSelectorMeta {
+    const cached = this.selectorMetaCache.get(selector);
+    if (cached) return cached;
+
+    const meta = this.extractSelectorsFromRule(selector);
+    this.selectorMetaCache.set(selector, meta);
+    return meta;
   }
 
   private extractSelectorsFromRule(selector: string): ExtractedSelectorMeta {
@@ -440,25 +574,64 @@ export class CSSAnalyzer {
       }
     }
 
-    for (const codeFile of this.codeFiles) {
-      if (token?.isCancellationRequested) {
-        return;
+    // Feature: @extend — mark extended classes as used candidates
+    for (const extClass of this.extendedClasses) {
+      if (classNames.has(extClass)) {
+        // Add a synthetic location so the extended class is considered used
+        const syntheticLoc = new vscode.Location(
+          vscode.Uri.parse('internal:@extend'),
+          new vscode.Range(0, 0, 0, 0)
+        );
+        let arr = classLocations.get(extClass);
+        if (!arr) {
+          arr = [];
+          classLocations.set(extClass, arr);
+        }
+        arr.push(syntheticLoc);
       }
+    }
+
+    const cfg = getConfig();
+
+    // Use extractor-based scanning with concurrency
+    await this.processWithConcurrency(this.codeFiles, async (codeFile) => {
+      if (token?.isCancellationRequested) return;
       try {
         const text = await this.readFileContent(codeFile);
-        const scanText = this.maskStyleBlocks(text);
-        const lineStarts = this.buildLineStarts(scanText);
-        const cfg = getConfig();
+        if (!text) return;
 
-        this.scanClassAttributes(scanText, codeFile, lineStarts, classLocations, classNames, cfg);
-        this.scanIdAttributes(scanText, codeFile, lineStarts, idLocations, idNames, cfg);
-        if (cfg.scanTags && tagNames.size > 0) {
-          this.scanTagNames(scanText, codeFile, lineStarts, tagLocations, tagNames, cfg);
+        const scanText = this.maskStyleBlocks(text);
+        const lineStarts = buildLineStarts(scanText);
+
+        const classGroups = new Set<string>();
+
+        const ctx: ScanContext = {
+          text: scanText,
+          uri: codeFile,
+          lineStarts,
+          classNames,
+          idNames,
+          tagNames,
+          classLocations,
+          idLocations,
+          tagLocations,
+          classGroups,
+          cfg
+        };
+
+        for (const extractor of this.extractors) {
+          if (extractor.shouldScan(ctx)) {
+            extractor.scan(ctx);
+          }
+        }
+
+        if (classGroups.size > 0) {
+          this.fileClassGroups.set(codeFile.fsPath, classGroups);
         }
       } catch (error) {
         console.error(`Error reading file ${codeFile.fsPath}:`, error);
       }
-    }
+    }, CONCURRENCY_LIMIT);
 
     for (const [key, selectorsList] of this.selectors) {
       const colonIdx = key.indexOf(':');
@@ -548,324 +721,21 @@ export class CSSAnalyzer {
     return deduped;
   }
 
-  private buildLineStarts(text: string): number[] {
-    const starts: number[] = [0];
-    for (let i = 0; i < text.length; i++) {
-      if (text[i] === '\n') {
-        starts.push(i + 1);
-      }
-    }
-    return starts;
-  }
-
-  private offsetToPosition(lineStarts: number[], offset: number): vscode.Position {
-    let low = 0;
-    let high = lineStarts.length - 1;
-    while (low < high) {
-      const mid = Math.ceil((low + high) / 2);
-      if (lineStarts[mid] <= offset) {
-        low = mid;
-      } else {
-        high = mid - 1;
-      }
-    }
-    return new vscode.Position(low, offset - lineStarts[low]);
-  }
-
-  private addLocationAtOffset(
-    map: Map<string, vscode.Location[]>,
-    name: string,
-    uri: vscode.Uri,
-    lineStarts: number[],
-    offset: number,
-    length: number
-  ) {
-    const start = this.offsetToPosition(lineStarts, offset);
-    const end = new vscode.Position(start.line, start.character + length);
-    const loc = new vscode.Location(uri, new vscode.Range(start, end));
-
-    let arr = map.get(name);
-    if (!arr) {
-      arr = [];
-      map.set(name, arr);
-    }
-    arr.push(loc);
-  }
-
-  private scanClassAttributes(
-    text: string,
-    uri: vscode.Uri,
-    lineStarts: number[],
-    classLocations: Map<string, vscode.Location[]>,
-    classNames: Set<string>,
-    cfg: ExtensionConfig
-  ) {
-    let m: RegExpExecArray | null;
-
-    const attrRegex = /\b(?:class|className|:class|v-bind:class|\[class\]|\[ngClass\])\s*=\s*(?:"([^"]*)"|'([^']*)'|{['"`]([^'"`]*)['"`]})/g;
-    while ((m = attrRegex.exec(text)) !== null) {
-      const value = m[1] ?? m[2] ?? m[3] ?? '';
-      this.extractClassNamesFromValue(value, m, classNames, classLocations, uri, lineStarts);
-    }
-
-    if (cfg.scanAngularPatterns) {
-      const ngClassObjRegex = /\[ngClass\]\s*=\s*"\{([^}]*)\}"/g;
-      while ((m = ngClassObjRegex.exec(text)) !== null) {
-        const objContent = m[1];
-        const objStart = m.index + m[0].indexOf(objContent);
-        const keyRegex = /['"]([a-zA-Z_][a-zA-Z0-9_-]*)['"]/g;
-        let km: RegExpExecArray | null;
-        while ((km = keyRegex.exec(objContent)) !== null) {
-          const name = km[1];
-          if (classNames.has(name)) {
-            this.addLocationAtOffset(classLocations, name, uri, lineStarts, objStart + km.index + 1, name.length);
-          }
-        }
-      }
-    }
-
-    if (cfg.scanSveltePatterns) {
-      const svelteRegex = /\bclass:([a-zA-Z_][a-zA-Z0-9_-]*)/g;
-      while ((m = svelteRegex.exec(text)) !== null) {
-        const name = m[1];
-        if (classNames.has(name)) {
-          const nameStart = m.index + m[0].indexOf(name);
-          this.addLocationAtOffset(classLocations, name, uri, lineStarts, nameStart, name.length);
-        }
-      }
-    }
-
-    if (cfg.scanAstroPatterns) {
-      const astroRegex = /class:list\s*=\s*{\s*\[([^\]]*)\]/g;
-      while ((m = astroRegex.exec(text)) !== null) {
-        const arrContent = m[1];
-        const arrStart = m.index + m[0].indexOf(arrContent);
-        const strRegex = /['"]([a-zA-Z_][a-zA-Z0-9_\s-]*)['"]/g;
-        let sm: RegExpExecArray | null;
-        while ((sm = strRegex.exec(arrContent)) !== null) {
-          const classStr = sm[1];
-          const classStrStart = arrStart + sm.index + 1;
-          const wordRegex = /[a-zA-Z_][a-zA-Z0-9_-]*/g;
-          let wm: RegExpExecArray | null;
-          while ((wm = wordRegex.exec(classStr)) !== null) {
-            if (classNames.has(wm[0])) {
-              this.addLocationAtOffset(classLocations, wm[0], uri, lineStarts, classStrStart + wm.index, wm[0].length);
-            }
-          }
-        }
-      }
-    }
-
-    if (cfg.scanDomApi) {
-      const classListRegex = /classList\s*\.\s*(?:add|remove|toggle|contains|replace)\s*\(([^)]+)\)/g;
-      while ((m = classListRegex.exec(text)) !== null) {
-        const argsContent = m[1];
-        const argsStart = m.index + m[0].indexOf(argsContent);
-        const strLitRegex = /['"]([a-zA-Z_][a-zA-Z0-9_-]*)['"]/g;
-        let sm: RegExpExecArray | null;
-        while ((sm = strLitRegex.exec(argsContent)) !== null) {
-          const name = sm[1];
-          if (classNames.has(name)) {
-            this.addLocationAtOffset(classLocations, name, uri, lineStarts, argsStart + sm.index + 1, name.length);
-          }
-        }
-      }
-
-      const qsRegex = /querySelector(?:All)?\s*\(\s*['"`]([^'"`]+)['"`]\s*\)/g;
-      while ((m = qsRegex.exec(text)) !== null) {
-        const selectorStr = m[1];
-        const selectorStart = m.index + m[0].indexOf(selectorStr);
-        const dotClassRegex = /\.([a-zA-Z_][a-zA-Z0-9_-]*)/g;
-        let cm: RegExpExecArray | null;
-        while ((cm = dotClassRegex.exec(selectorStr)) !== null) {
-          const name = cm[1];
-          if (classNames.has(name)) {
-            this.addLocationAtOffset(classLocations, name, uri, lineStarts, selectorStart + cm.index + 1, name.length);
-          }
-        }
-      }
-    }
-
-    if (cfg.scanPugPatterns && this.shouldScanPugPatternsInFile(uri, text)) {
-      const pugRegex = /^[ \t]*(?:[a-zA-Z][a-zA-Z0-9]*)?(\.(?:[a-zA-Z_][a-zA-Z0-9_-]*)(?:\.(?:[a-zA-Z_][a-zA-Z0-9_-]*))*)/gm;
-      while ((m = pugRegex.exec(text)) !== null) {
-        const dotClasses = m[1];
-        const dotStart = m.index + m[0].indexOf(dotClasses);
-        const dotRegex = /\.([a-zA-Z_][a-zA-Z0-9_-]*)/g;
-        let dm: RegExpExecArray | null;
-        while ((dm = dotRegex.exec(dotClasses)) !== null) {
-          const name = dm[1];
-          if (classNames.has(name)) {
-            this.addLocationAtOffset(classLocations, name, uri, lineStarts, dotStart + dm.index + 1, name.length);
-          }
-        }
-      }
-    }
-  }
-
-  private shouldScanPugPatternsInFile(uri: vscode.Uri, text: string): boolean {
-    const lowerPath = uri.fsPath.toLowerCase();
-    if (lowerPath.endsWith('.pug') || lowerPath.endsWith('.jade') || lowerPath.endsWith('.slim') || lowerPath.endsWith('.haml')) {
-      return true;
-    }
-    return /<template[^>]*\blang\s*=\s*["'](?:pug|jade|slim|haml)["'][^>]*>/i.test(text);
-  }
-
-  private extractClassNamesFromValue(
-    value: string,
-    match: RegExpExecArray,
-    classNames: Set<string>,
-    classLocations: Map<string, vscode.Location[]>,
-    uri: vscode.Uri,
-    lineStarts: number[]
-  ) {
-    const valueStart = match.index + match[0].indexOf(value);
-    const classRegex = /[a-zA-Z_][a-zA-Z0-9_-]*/g;
-    let cm: RegExpExecArray | null;
-    while ((cm = classRegex.exec(value)) !== null) {
-      const name = cm[0];
-      if (classNames.has(name)) {
-        this.addLocationAtOffset(classLocations, name, uri, lineStarts, valueStart + cm.index, name.length);
-      }
-    }
-  }
-
-  private scanIdAttributes(
-    text: string,
-    uri: vscode.Uri,
-    lineStarts: number[],
-    idLocations: Map<string, vscode.Location[]>,
-    idNames: Set<string>,
-    cfg: ExtensionConfig
-  ) {
-    let m: RegExpExecArray | null;
-
-    const attrRegex = /\b(?:id|\[id\])\s*=\s*(?:"([^"]*)"|'([^']*)'|{['"`]([^'"`]*)['"`]})/g;
-    while ((m = attrRegex.exec(text)) !== null) {
-      const value = m[1] ?? m[2] ?? m[3] ?? '';
-      if (idNames.has(value)) {
-        const valueStart = m.index + m[0].indexOf(value);
-        this.addLocationAtOffset(idLocations, value, uri, lineStarts, valueStart, value.length);
-      }
-    }
-
-    if (cfg.scanDomApi) {
-      const getByIdRegex = /getElementById\s*\(\s*['"`]([a-zA-Z_][a-zA-Z0-9_-]*)['"`]\s*\)/g;
-      while ((m = getByIdRegex.exec(text)) !== null) {
-        const name = m[1];
-        if (idNames.has(name)) {
-          const nameStart = m.index + m[0].indexOf(name);
-          this.addLocationAtOffset(idLocations, name, uri, lineStarts, nameStart, name.length);
-        }
-      }
-
-      const qsIdRegex = /querySelector(?:All)?\s*\(\s*['"`]([^'"`]+)['"`]\s*\)/g;
-      while ((m = qsIdRegex.exec(text)) !== null) {
-        const selectorStr = m[1];
-        const selectorStart = m.index + m[0].indexOf(selectorStr);
-        const hashIdRegex = /#([a-zA-Z_][a-zA-Z0-9_-]*)/g;
-        let im: RegExpExecArray | null;
-        while ((im = hashIdRegex.exec(selectorStr)) !== null) {
-          const name = im[1];
-          if (idNames.has(name)) {
-            this.addLocationAtOffset(idLocations, name, uri, lineStarts, selectorStart + im.index + 1, name.length);
-          }
-        }
-      }
-    }
-  }
-
-  private scanTagNames(
-    text: string,
-    uri: vscode.Uri,
-    lineStarts: number[],
-    tagLocations: Map<string, vscode.Location[]>,
-    tagNames: Set<string>,
-    cfg: ExtensionConfig
-  ) {
-    let m: RegExpExecArray | null;
-
-    const tagRegex = /<\s*([a-zA-Z_][a-zA-Z0-9_-]*)/g;
-    while ((m = tagRegex.exec(text)) !== null) {
-      const name = m[1];
-      const nameLower = name.toLowerCase();
-      const matchedName = tagNames.has(name) ? name : (tagNames.has(nameLower) ? nameLower : undefined);
-      if (matchedName) {
-        const nameStart = m.index + m[0].indexOf(name);
-        this.addLocationAtOffset(tagLocations, matchedName, uri, lineStarts, nameStart, name.length);
-      }
-    }
-
-    if (cfg.scanDomApi) {
-      const getByTagRegex = /getElementsByTagName(?:NS)?\s*\(\s*(?:['"`][^'"`]*['"`]\s*,\s*)?['"`]([a-zA-Z_][a-zA-Z0-9_-]*)['"`]\s*\)/g;
-      while ((m = getByTagRegex.exec(text)) !== null) {
-        const name = m[1];
-        const nameLower = name.toLowerCase();
-        const matchedName = tagNames.has(name) ? name : (tagNames.has(nameLower) ? nameLower : undefined);
-        if (matchedName) {
-          const nameStart = m.index + m[0].indexOf(name);
-          this.addLocationAtOffset(tagLocations, matchedName, uri, lineStarts, nameStart, name.length);
-        }
-      }
-
-      const createElementRegex = /createElement\s*\(\s*['"`]([a-zA-Z_][a-zA-Z0-9_-]*)['"`]\s*\)/g;
-      while ((m = createElementRegex.exec(text)) !== null) {
-        const name = m[1];
-        const nameLower = name.toLowerCase();
-        const matchedName = tagNames.has(name) ? name : (tagNames.has(nameLower) ? nameLower : undefined);
-        if (matchedName) {
-          const nameStart = m.index + m[0].indexOf(name);
-          this.addLocationAtOffset(tagLocations, matchedName, uri, lineStarts, nameStart, name.length);
-        }
-      }
-
-      const qsRegex = /querySelector(?:All)?\s*\(\s*['"`]([^'"`]+)['"`]\s*\)/g;
-      while ((m = qsRegex.exec(text)) !== null) {
-        const selectorStr = m[1];
-        const selectorStart = m.index + m[0].indexOf(selectorStr);
-        try {
-          selectorParser(selectors => {
-            selectors.walkTags(sel => {
-              const name = sel.value;
-              const nameLower = name.toLowerCase();
-              const matchedName = tagNames.has(name) ? name : (tagNames.has(nameLower) ? nameLower : undefined);
-              if (matchedName) {
-                const offset = (sel as any).sourceIndex ?? selectorStr.indexOf(name);
-                this.addLocationAtOffset(tagLocations, matchedName, uri, lineStarts, selectorStart + offset, name.length);
-              }
-            });
-          }).processSync(selectorStr);
-        } catch {
-          const wordRegex = /\b([a-zA-Z_][a-zA-Z0-9_-]*)\b/g;
-          let wm: RegExpExecArray | null;
-          while ((wm = wordRegex.exec(selectorStr)) !== null) {
-            const name = wm[1];
-            const precedingChar = selectorStr.charAt(wm.index - 1);
-            if (precedingChar !== '.' && precedingChar !== '#' && precedingChar !== ':' && precedingChar !== '[' && precedingChar !== '@') {
-              const nameLower = name.toLowerCase();
-              const matchedName = tagNames.has(name) ? name : (tagNames.has(nameLower) ? nameLower : undefined);
-              if (matchedName) {
-                this.addLocationAtOffset(tagLocations, matchedName, uri, lineStarts, selectorStart + wm.index, name.length);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
   private getResults(): AnalysisResult {
     const mergedByRule = new Map<string, CSSSelector & { atomUsage: Set<string> }>();
 
     for (const [atomKey, selectorsList] of this.selectors) {
       for (const selector of selectorsList) {
-        const ruleKey = `${selector.file.fsPath}:${selector.line}:${selector.selector}`;
+        // Bug #4: Add startChar to ruleKey to disambiguate selectors on the same line
+        const startChar = selector.range?.start.character ?? 0;
+        const ruleKey = `${selector.file.fsPath}:${selector.line}:${startChar}:${selector.selector}`;
         const existing = mergedByRule.get(ruleKey);
 
         if (!existing) {
           mergedByRule.set(ruleKey, {
             ...selector,
-            locations: selector.hasCombinator ? [] : [...selector.locations],
+            // Bug #2: Keep locations even for combinators (as probable references)
+            locations: [...selector.locations],
             atomUsage: selector.used ? new Set([atomKey]) : new Set<string>()
           });
           continue;
@@ -882,13 +752,14 @@ export class CSSAnalyzer {
         existing.selectorGroups = selector.selectorGroups || existing.selectorGroups;
         existing.groupCount = selector.groupCount || existing.groupCount;
         existing.hasSelectorList = selector.hasSelectorList ?? existing.hasSelectorList;
+        existing.specificity = selector.specificity || existing.specificity;
+        existing.resolvedSelectors = selector.resolvedSelectors || existing.resolvedSelectors;
 
-        if (!existing.hasCombinator) {
-          existing.locations = this.sortAndDeduplicateLocations(
-            [...existing.locations, ...selector.locations],
-            existing.file.fsPath
-          );
-        }
+        // Bug #2: Always merge locations (even for combinators)
+        existing.locations = this.sortAndDeduplicateLocations(
+          [...existing.locations, ...selector.locations],
+          existing.file.fsPath
+        );
       }
     }
 
@@ -900,7 +771,8 @@ export class CSSAnalyzer {
         ? selector.selectorGroups
         : [selector.selector];
 
-      const groupAnalyses = groupStrings.map(group => this.extractSelectorsFromRule(group));
+      // Perf: Use cached meta instead of re-parsing
+      const groupAnalyses = groupStrings.map(group => this.extractSelectorsFromRuleCached(group));
 
       let matchedGroupsCount = 0;
       let anyProbable = false;
@@ -932,6 +804,8 @@ export class CSSAnalyzer {
         selector.status = 'unused';
         selector.useCount = 0;
         selector.locations = [];
+        // Confidence for unused selectors
+        selector.confidence = 0;
         unused.push(selector);
         continue;
       }
@@ -944,27 +818,67 @@ export class CSSAnalyzer {
           selector.useCount = selector.locations.length;
         } else {
           selector.status = 'probable';
-          if (selector.hasCombinator) {
-            selector.useCount = 0;
-            selector.locations = [];
-          } else {
-            selector.useCount = selector.locations.length;
-          }
+          // Bug #2: Keep locations for probable matches
+          selector.useCount = selector.locations.length;
         }
         used.push(selector);
-        continue;
-      }
-
-      if (selector.hasCombinator) {
+      } else if (selector.hasCombinator) {
+        // Bug #2: Keep locations as probable references instead of clearing them
         selector.status = 'probable';
-        selector.useCount = 0;
-        selector.locations = [];
+        selector.useCount = selector.locations.length;
       } else {
         selector.status = selector.canBeConfirmedStatically ? 'confirmed' : 'probable';
         selector.useCount = selector.locations.length;
       }
 
-      used.push(selector);
+      // Calculate confidence score
+      const sameFileMatch = selector.locations.some(
+        loc => loc.uri.fsPath === selector.file.fsPath
+      );
+
+      let colocatedClasses = false;
+      let isSingleAtom = true;
+      for (const analysis of groupAnalyses) {
+        const group = analysis.groups[0];
+        if (!group) continue;
+        
+        if (group.parts.length > 1 || selector.hasCombinator) {
+          isSingleAtom = false;
+        }
+
+        const classParts = group.parts.filter(p => p.type === 'class').map(p => p.value);
+        if (classParts.length > 1) {
+          for (const loc of selector.locations) {
+            const groups = this.fileClassGroups.get(loc.uri.fsPath);
+            if (groups) {
+              for (const g of groups) {
+                // Check if all class parts are found as whole words in this class group
+                const allPresent = classParts.every(c => new RegExp(`\\b${c}\\b`).test(g));
+                if (allPresent) {
+                  colocatedClasses = true;
+                  break;
+                }
+              }
+            }
+            if (colocatedClasses) break;
+          }
+        }
+        if (colocatedClasses) break;
+      }
+
+      const factors: Partial<ConfidenceFactors> = {
+        allAtomsFound: matchedGroupsCount > 0,
+        sameFileMatch,
+        noCombinators: !selector.hasCombinator,
+        colocatedClasses,
+        staticReference: true,
+        isSingleAtom
+      };
+      selector.confidence = calculateConfidence(selector, factors);
+
+      if (!selector.hasSelectorList) {
+        used.push(selector);
+      }
     }
 
     return {

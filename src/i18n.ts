@@ -84,6 +84,14 @@ const translations: Translations = {
     en: '*Probable usage (unverified hierarchy)*',
     es: '*Uso probable (jerarquía no verificada)*'
   },
+  'hoverConfidence': {
+    en: 'Confidence: {icon} {score}% ({label})',
+    es: 'Confianza: {icon} {score}% ({label})'
+  },
+  'hoverSpecificity': {
+    en: 'Specificity: `{spec}`',
+    es: 'Especificidad: `{spec}`'
+  },
 
   // === Commands ===
   'cmdAnalyze': {
@@ -93,6 +101,10 @@ const translations: Translations = {
   'cmdOpenPanel': {
     en: 'CSS: Open analysis panel',
     es: 'CSS: Abrir panel de análisis'
+  },
+  'cmdExportResults': {
+    en: 'CSS: Export analysis results',
+    es: 'CSS: Exportar resultados del análisis'
   },
   'cmdOpenSettings': {
     en: 'CSS: Open settings',

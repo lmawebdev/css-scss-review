@@ -69,6 +69,11 @@ export class DiagnosticsManager {
       const severity = getSeverity(cfg.diagnosticSeverity);
 
       for (const selector of results.unused) {
+        const confidence = selector.confidence ?? 0;
+        if (confidence > cfg.confidenceThreshold) {
+          continue; // Skip diagnostics for items we are somewhat confident are used
+        }
+
         const filePath = selector.file.fsPath;
 
         if (!diagnosticsByFile.has(filePath)) {
