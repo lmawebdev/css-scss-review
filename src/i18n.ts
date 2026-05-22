@@ -60,6 +60,10 @@ const translations: Translations = {
     en: 'No references found',
     es: 'No se encontraron referencias'
   },
+  'codeLensProbable': {
+    en: ' (Probable)',
+    es: ' (Probable)'
+  },
 
   // === Diagnostics ===
   'unusedSelector': {
@@ -75,6 +79,10 @@ const translations: Translations = {
   'hoverNotUsed': {
     en: '*This selector does not appear to be used anywhere in the workspace.*',
     es: '*Este selector no parece estar usado en ninguna parte del workspace.*'
+  },
+  'hoverProbable': {
+    en: '*Probable usage (unverified hierarchy)*',
+    es: '*Uso probable (jerarquía no verificada)*'
   },
 
   // === Commands ===
@@ -132,11 +140,17 @@ const translations: Translations = {
   },
 };
 
-let currentLanguage: Language = 'es';
+let currentLanguage: Language = 'en';
 
 export function initLanguage(): void {
   const config = vscode.workspace.getConfiguration('cssUnusedDetector');
-  currentLanguage = config.get<Language>('language', 'es');
+  const langSetting = config.get<string>('language', 'auto');
+  if (langSetting === 'auto') {
+    const ideLang = vscode.env.language || '';
+    currentLanguage = ideLang.startsWith('es') ? 'es' : 'en';
+  } else {
+    currentLanguage = langSetting === 'es' ? 'es' : 'en';
+  }
 }
 
 export function getLanguage(): Language {

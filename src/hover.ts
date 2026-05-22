@@ -49,6 +49,10 @@ export class CSSHoverProvider implements vscode.HoverProvider {
 
         md.appendMarkdown(`✅ **${selector.selector}**: ${countText}\n\n`);
 
+        if (selector.status === 'probable') {
+          md.appendMarkdown(`⚠️ ${t('hoverProbable')}\n\n`);
+        }
+
         if (fileCounts.size > 0) {
           md.appendMarkdown(`${t('hoverUsedIn')}\n`);
           for (const [file, count] of fileCounts) {

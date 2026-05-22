@@ -7,6 +7,7 @@
   "command.removeUnusedGlobally.title": "CSS: Remove all unused selectors in workspace / Eliminar todos los selectores sin usar en el workspace",
   "config.title": "CSS/SCSS Unused Detector",
   "config.language.desc": "[EN] Extension display language / [ES] Idioma de visualización de la extensión",
+  "config.language.enum.auto": "Auto (OS Language) / Auto (Idioma del SO)",
   "config.language.enum.en": "English / Inglés",
   "config.language.enum.es": "Español / Spanish",
   "config.highlightColor.desc": "[EN] Background color for unused CSS selectors / [ES] Color de fondo para los selectores CSS no utilizados",

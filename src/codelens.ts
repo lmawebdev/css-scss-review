@@ -66,9 +66,13 @@ export class CSSCodeLensProvider implements vscode.CodeLensProvider {
       else if (cfg.diagnosticSeverity === 'information') icon = 'ℹ️';
       else if (cfg.diagnosticSeverity === 'hint') icon = '💡';
 
-      const title = useCount === 0
+      let title = useCount === 0
         ? t('noReferences', { icon })
         : t('references', { count: useCount, plural });
+
+      if (selector.status === 'probable') {
+        title += t('codeLensProbable');
+      }
 
       const command: vscode.Command = {
         title: title,
