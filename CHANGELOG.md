@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.19
+### Added
+- **Interactive Webview Dashboard**: Displays CSS coverage, selector stats, dynamic SVG charts, and a detailed interactive table sorted by confidence score.
+- **Smart Confidence Heuristics**: Added a confidence score (0-100%) to reduce false positives by evaluating selector usage probability.
+- **Modular Extractors**: Complete architectural rewrite introducing specialized, framework-specific extractors for HTML, JSX/React, Vue, Angular, Svelte, Astro, Pug, CSS Modules, and standard DOM APIs.
+- **Performance & Limits**: Added concurrency limits and file size limit configurations to optimize speed and prevent high memory usage.
+- **Export Reports**: Added command `CSS: Export analysis results` to export selector analysis directly to a file.
+
+### Improved
+- Substantially optimized codebase scanning speed through parsed files concurrency.
+- Enhanced selector parsing precision using isolated specificity analysis.
+
 ## 1.0.18
 ### Fixed
 - Fixed false positives in complex selectors like `.prose a`.

@@ -3,7 +3,7 @@
   "displayName": "CSS/SCSS Unused Detector",
   "publisher": "alex-web-dev",
   "description": "%extension.description%",
-  "version": "1.1.1",
+  "version": "1.0.19",
   "repository": {
     "type": "git",
     "url": "https://github.com/lmawebdev/css-scss-review"
