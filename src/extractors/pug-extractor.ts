@@ -13,7 +13,7 @@ export class PugExtractor implements UsageExtractor {
   }
 
   scan(ctx: ScanContext): void {
-    const { text, uri, lineStarts, classLocations, classNames } = ctx;
+    const { strippedText: text, uri, lineStarts, classLocations, classNames } = ctx;
     let m: RegExpExecArray | null;
 
     const pugRegex = /^[ \t]*(?:[a-zA-Z][a-zA-Z0-9]*)?(\.(?:[a-zA-Z_][a-zA-Z0-9_-]*)(?:\.(?:[a-zA-Z_][a-zA-Z0-9_-]*))*)/gm;

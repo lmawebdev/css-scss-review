@@ -8,7 +8,7 @@ export class CssModulesExtractor implements UsageExtractor {
   }
 
   scan(ctx: ScanContext): void {
-    const { text, uri, lineStarts, classLocations, classNames } = ctx;
+    const { strippedText: text, uri, lineStarts, classLocations, classNames } = ctx;
     
     // Find CSS module imports: import IDENT from '...module.css/scss/less'
     // Also: const IDENT = require('...module.css')

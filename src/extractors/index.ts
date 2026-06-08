@@ -9,8 +9,9 @@ import { TagExtractor } from './tag-extractor';
 import { JsxExtractor } from './jsx-extractor';
 import { VueExtractor } from './vue-extractor';
 import { CssModulesExtractor } from './css-modules-extractor';
+import { TaggedTemplateExtractor } from './tagged-template-extractor';
 
-export { UsageExtractor, ScanContext, addLocation, buildLineStarts, offsetToPosition } from './types';
+export { UsageExtractor, ScanContext, addLocation, buildLineStarts, offsetToPosition, stripComments } from './types';
 
 export function createExtractors(): UsageExtractor[] {
   return [
@@ -24,5 +25,6 @@ export function createExtractors(): UsageExtractor[] {
     new JsxExtractor(),
     new VueExtractor(),
     new CssModulesExtractor(),
+    new TaggedTemplateExtractor(),
   ];
 }

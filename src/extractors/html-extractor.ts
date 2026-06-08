@@ -13,7 +13,7 @@ export class HtmlExtractor implements UsageExtractor {
   }
 
   private scanClassAttributes(ctx: ScanContext): void {
-    const { text, uri, lineStarts, classLocations, classNames } = ctx;
+    const { strippedText: text, uri, lineStarts, classLocations, classNames } = ctx;
     let m: RegExpExecArray | null;
 
     // Standard class/className attributes with string values
@@ -38,7 +38,7 @@ export class HtmlExtractor implements UsageExtractor {
   }
 
   private scanIdAttributes(ctx: ScanContext): void {
-    const { text, uri, lineStarts, idLocations, idNames } = ctx;
+    const { strippedText: text, uri, lineStarts, idLocations, idNames } = ctx;
     let m: RegExpExecArray | null;
 
     const attrRegex = /\b(?:id|\[id\])\s*=\s*(?:"([^"]*)"|'([^']*)'|{['"`]([^'"`]*)['"`]})/g;

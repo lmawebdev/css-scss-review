@@ -6,7 +6,7 @@ import { getConfig, ExtensionConfig } from './config';
 import { resolveNestedSelector } from './nesting-resolver';
 import { calculateSpecificity, Specificity } from './specificity';
 import { calculateConfidence, ConfidenceFactors } from './confidence';
-import { createExtractors, ScanContext, buildLineStarts } from './extractors';
+import { createExtractors, ScanContext, buildLineStarts, stripComments } from './extractors';
 import type { UsageExtractor } from './extractors';
 
 export interface CSSSelector {
@@ -601,12 +601,14 @@ export class CSSAnalyzer {
         if (!text) return;
 
         const scanText = this.maskStyleBlocks(text);
+        const strippedText = stripComments(scanText);
         const lineStarts = buildLineStarts(scanText);
 
         const classGroups = new Set<string>();
 
         const ctx: ScanContext = {
           text: scanText,
+          strippedText,
           uri: codeFile,
           lineStarts,
           classNames,

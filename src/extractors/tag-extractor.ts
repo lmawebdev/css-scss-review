@@ -8,7 +8,7 @@ export class TagExtractor implements UsageExtractor {
   }
 
   scan(ctx: ScanContext): void {
-    const { text, uri, lineStarts, tagLocations, tagNames } = ctx;
+    const { strippedText: text, uri, lineStarts, tagLocations, tagNames } = ctx;
     let m: RegExpExecArray | null;
 
     const tagRegex = /<\s*([a-zA-Z_][a-zA-Z0-9_-]*)/g;

@@ -8,7 +8,7 @@ export class AstroExtractor implements UsageExtractor {
   }
 
   scan(ctx: ScanContext): void {
-    const { text, uri, lineStarts, classLocations, classNames } = ctx;
+    const { strippedText: text, uri, lineStarts, classLocations, classNames } = ctx;
     let m: RegExpExecArray | null;
 
     const astroRegex = /class:list\s*=\s*{\s*\[([^\]]*)\]/g;

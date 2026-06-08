@@ -8,30 +8,86 @@ export class DomApiExtractor implements UsageExtractor {
   }
 
   scan(ctx: ScanContext): void {
-    const { text, uri, lineStarts, classLocations, idLocations, tagLocations, classNames, idNames, tagNames } = ctx;
+    const { strippedText: text, uri, lineStarts, classLocations, idLocations, tagLocations, classNames, idNames, tagNames } = ctx;
     let m: RegExpExecArray | null;
 
-    // classList API
+    // ── classList.add/remove/toggle/contains/replace ──────────────────────
     const classListRegex = /classList\s*\.\s*(?:add|remove|toggle|contains|replace)\s*\(([^)]+)\)/g;
     while ((m = classListRegex.exec(text)) !== null) {
       const argsContent = m[1];
       const argsStart = m.index + m[0].indexOf(argsContent);
-      const strLitRegex = /['"]([a-zA-Z_][a-zA-Z0-9_-]*)['"]/g;
+      const strLitRegex = /['"]([a-zA-Z_][a-zA-Z0-9_-]*)['"]|`([a-zA-Z_][a-zA-Z0-9_-]*)`/g;
       let sm: RegExpExecArray | null;
       while ((sm = strLitRegex.exec(argsContent)) !== null) {
-        const name = sm[1];
+        const name = sm[1] ?? sm[2];
         if (classNames.has(name)) {
           addLocation(classLocations, name, uri, lineStarts, argsStart + sm.index + 1, name.length);
         }
       }
     }
 
-    // querySelector for classes and ids
-    const qsRegex = /querySelector(?:All)?\s*\(\s*['"`]([^'"`]+)['"`]\s*\)/g;
+    // ── classList.replace('old-class', 'new-class') — extract both args ───
+    // (already partially covered above, but ensure both arg positions are found)
+    const replaceRegex = /classList\s*\.\s*replace\s*\(\s*['"`]([a-zA-Z_][a-zA-Z0-9_-]*)['"`]\s*,\s*['"`]([a-zA-Z_][a-zA-Z0-9_-]*)['"`]\s*\)/g;
+    while ((m = replaceRegex.exec(text)) !== null) {
+      for (let i = 1; i <= 2; i++) {
+        const name = m[i];
+        if (name && classNames.has(name)) {
+          const nameStart = m.index + m[0].indexOf(name, i > 1 ? m[0].indexOf(',') : 0);
+          addLocation(classLocations, name, uri, lineStarts, nameStart, name.length);
+        }
+      }
+    }
+
+    // ── el.className = 'class1 class2' ───────────────────────────────────
+    const classNamePropRegex = /\.className\s*=\s*['\"`]([^'"\`]+)['\"`]/g;
+    while ((m = classNamePropRegex.exec(text)) !== null) {
+      const classStr = m[1];
+      const classStrStart = m.index + m[0].indexOf(classStr);
+      const wordRegex = /[a-zA-Z_][a-zA-Z0-9_-]*/g;
+      let wm: RegExpExecArray | null;
+      while ((wm = wordRegex.exec(classStr)) !== null) {
+        if (classNames.has(wm[0])) {
+          addLocation(classLocations, wm[0], uri, lineStarts, classStrStart + wm.index, wm[0].length);
+        }
+      }
+    }
+
+    // ── el.className += 'extra-class' ────────────────────────────────────
+    const classNameConcatRegex = /\.className\s*\+=\s*['\"`]\s*([a-zA-Z_][a-zA-Z0-9_\s-]*)['\"`]/g;
+    while ((m = classNameConcatRegex.exec(text)) !== null) {
+      const classStr = m[1].trim();
+      const classStrStart = m.index + m[0].indexOf(classStr);
+      if (classStr) { ctx.classGroups.add(classStr); }
+      const wordRegex = /[a-zA-Z_][a-zA-Z0-9_-]*/g;
+      let wm: RegExpExecArray | null;
+      while ((wm = wordRegex.exec(classStr)) !== null) {
+        if (classNames.has(wm[0])) {
+          addLocation(classLocations, wm[0], uri, lineStarts, classStrStart + wm.index, wm[0].length);
+        }
+      }
+    }
+
+    // ── setAttribute('class', 'class1 class2') ───────────────────────────
+    const setAttrRegex = /setAttribute\s*\(\s*['"]class['"]\s*,\s*['\"`]([^'"\`]+)['\"`]/g;
+    while ((m = setAttrRegex.exec(text)) !== null) {
+      const classStr = m[1];
+      const classStrStart = m.index + m[0].indexOf(classStr);
+      const wordRegex = /[a-zA-Z_][a-zA-Z0-9_-]*/g;
+      let wm: RegExpExecArray | null;
+      while ((wm = wordRegex.exec(classStr)) !== null) {
+        if (classNames.has(wm[0])) {
+          addLocation(classLocations, wm[0], uri, lineStarts, classStrStart + wm.index, wm[0].length);
+        }
+      }
+    }
+
+    // ── querySelector / querySelectorAll ─────────────────────────────────
+    const qsRegex = /querySelector(?:All)?\s*\(\s*['\"`]([^'\"`]+)['\"`]\s*\)/g;
     while ((m = qsRegex.exec(text)) !== null) {
       const selectorStr = m[1];
       const selectorStart = m.index + m[0].indexOf(selectorStr);
-      
+
       const dotClassRegex = /\.([a-zA-Z_][a-zA-Z0-9_-]*)/g;
       let cm: RegExpExecArray | null;
       while ((cm = dotClassRegex.exec(selectorStr)) !== null) {
@@ -51,8 +107,8 @@ export class DomApiExtractor implements UsageExtractor {
       }
     }
 
-    // getElementById
-    const getByIdRegex = /getElementById\s*\(\s*['"`]([a-zA-Z_][a-zA-Z0-9_-]*)['"`]\s*\)/g;
+    // ── getElementById ────────────────────────────────────────────────────
+    const getByIdRegex = /getElementById\s*\(\s*['\"`]([a-zA-Z_][a-zA-Z0-9_-]*)['\"`]\s*\)/g;
     while ((m = getByIdRegex.exec(text)) !== null) {
       const name = m[1];
       if (idNames.has(name)) {
@@ -61,9 +117,9 @@ export class DomApiExtractor implements UsageExtractor {
       }
     }
 
-    // getElementsByTagName / createElement
+    // ── getElementsByTagName / createElement ─────────────────────────────
     if (tagNames.size > 0) {
-      const getByTagRegex = /(?:getElementsByTagName(?:NS)?|createElement)\s*\(\s*(?:['"`][^'"`]*['"`]\s*,\s*)?['"`]([a-zA-Z_][a-zA-Z0-9_-]*)['"`]\s*\)/g;
+      const getByTagRegex = /(?:getElementsByTagName(?:NS)?|createElement)\s*\(\s*(?:['\"`][^'\"`]*['\"`]\s*,\s*)?['\"`]([a-zA-Z_][a-zA-Z0-9_-]*)['\"`]\s*\)/g;
       while ((m = getByTagRegex.exec(text)) !== null) {
         const name = m[1];
         const nameLower = name.toLowerCase();
